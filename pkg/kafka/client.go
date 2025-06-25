@@ -7,6 +7,13 @@ import (
 	"time"
 )
 
+// TopicPartitionOffset represents topic partition offset information
+type TopicPartitionOffset struct {
+	Topic     string
+	Partition int32
+	Offset    kafka.Offset
+}
+
 // Client wraps Kafka admin and consumer clients
 type Client struct {
 	admin    *kafka.AdminClient
@@ -138,11 +145,4 @@ func (c *Client) GetConsumerGroupMembers(ctx context.Context, groupIDs []string)
 	}
 
 	return members, nil
-}
-
-// TopicPartitionOffset represents topic partition offset information
-type TopicPartitionOffset struct {
-	Topic     string
-	Partition int32
-	Offset    kafka.Offset
 }

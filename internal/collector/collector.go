@@ -2,6 +2,7 @@ package collector
 
 import (
 	"LagRadar/internal/metrics"
+	kafkaclient "LagRadar/pkg/kafka"
 	"context"
 	"fmt"
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
@@ -10,43 +11,44 @@ import (
 	"time"
 )
 
+// KafkaClient defines the interface for Kafka operations
+type KafkaClient interface {
+	Close()
+	ListConsumerGroups(ctx context.Context) ([]string, error)
+	GetConsumerGroupOffsets(ctx context.Context, groupID string) ([]kafkaclient.TopicPartitionOffset, error)
+	GetHighWatermark(topic string, partition int32) (int64, error)
+	GetConsumerGroupMembers(ctx context.Context, groupIDs []string) (map[string]int, error)
+}
+
 type Collector struct {
-	admin    *kafka.AdminClient
-	consumer *kafka.Consumer
-	brokers  string
+	client KafkaClient
 }
 
 func New(brokers string) (*Collector, error) {
-	admin, err := kafka.NewAdminClient(&kafka.ConfigMap{
-		"bootstrap.servers": brokers,
+	client, err := kafkaclient.NewClient(&kafkaclient.Config{
+		Brokers:        brokers,
+		ConsumerGroup:  "lagradar_metrics_collector",
+		RequestTimeout: 5 * time.Second,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create admin client: %w", err)
-	}
-
-	consumer, err := kafka.NewConsumer(&kafka.ConfigMap{
-		"bootstrap.servers": brokers,
-		"group.id":          "lagradar_metrics_collector",
-		"auto.offset.reset": "earliest",
-	})
-	if err != nil {
-		admin.Close()
-		return nil, fmt.Errorf("failed to create consumer: %w", err)
+		return nil, fmt.Errorf("failed to create kafka client: %w", err)
 	}
 
 	return &Collector{
-		admin:    admin,
-		consumer: consumer,
-		brokers:  brokers,
+		client: client,
 	}, nil
 }
 
-func (c *Collector) Close() {
-	if c.admin != nil {
-		c.admin.Close()
+// NewWithClient creates a new collector with a custom client - For Test
+func NewWithClient(client KafkaClient) *Collector {
+	return &Collector{
+		client: client,
 	}
-	if c.consumer != nil {
-		c.consumer.Close()
+}
+
+func (c *Collector) Close() {
+	if c.client != nil {
+		c.client.Close()
 	}
 }
 
@@ -58,32 +60,24 @@ func (c *Collector) CollectMetrics(ctx context.Context) error {
 	}()
 
 	// List all consumer groups
-	groupsResult, err := c.admin.ListConsumerGroups(ctx)
+	groupIDs, err := c.client.ListConsumerGroups(ctx)
 	if err != nil {
 		metrics.ScrapeErrors.Inc()
 		return fmt.Errorf("failed to list consumer groups: %w", err)
 	}
 
-	var groupIDs []string
-	for _, group := range groupsResult.Valid {
-		groupIDs = append(groupIDs, group.GroupID)
-	}
-
 	log.Printf("Found %d consumer groups", len(groupIDs))
 
-	// Get group descriptions for member count
-	groupDescResult, err := c.admin.DescribeConsumerGroups(ctx, groupIDs)
+	// Get group member counts
+	memberCounts, err := c.client.GetConsumerGroupMembers(ctx, groupIDs)
 	if err != nil {
-		log.Printf("Warning: failed to describe consumer groups: %v", err)
+		log.Printf("Warning: failed to get group members: %v", err)
 	} else {
-		for _, groupDesc := range groupDescResult.ConsumerGroupDescriptions {
-			if groupDesc.Error.Code() == kafka.ErrNoError {
-				metrics.ConsumerGroupMembers.WithLabelValues(groupDesc.GroupID).Set(float64(len(groupDesc.Members)))
-			}
+		for groupID, count := range memberCounts {
+			metrics.ConsumerGroupMembers.WithLabelValues(groupID).Set(float64(count))
 		}
 	}
 
-	// Process each consumer group
 	for _, groupID := range groupIDs {
 		if err := c.collectGroupMetrics(ctx, groupID); err != nil {
 			log.Printf("Error collecting metrics for group %s: %v", groupID, err)
@@ -96,60 +90,37 @@ func (c *Collector) CollectMetrics(ctx context.Context) error {
 }
 
 func (c *Collector) collectGroupMetrics(ctx context.Context, groupID string) error {
-	// Get consumer group offsets
-	offsetsResult, err := c.admin.ListConsumerGroupOffsets(ctx, []kafka.ConsumerGroupTopicPartitions{
-		{
-			Group: groupID,
-		},
-	})
-
+	offsets, err := c.client.GetConsumerGroupOffsets(ctx, groupID)
 	if err != nil {
-		return fmt.Errorf("failed to list offsets: %w", err)
+		return fmt.Errorf("failed to get group offsets: %w", err)
 	}
 
-	if len(offsetsResult.ConsumerGroupsTopicPartitions) == 0 {
-		return nil
-	}
+	for _, tpo := range offsets {
+		partitionStr := strconv.Itoa(int(tpo.Partition))
 
-	groupOffsets := offsetsResult.ConsumerGroupsTopicPartitions[0]
-
-	// Process each topic partition
-	for _, topicPartition := range groupOffsets.Partitions {
-		if topicPartition.Topic == nil {
-			continue
-		}
-
-		topic := *topicPartition.Topic
-		partition := topicPartition.Partition
-		partitionStr := strconv.Itoa(int(partition))
-
-		// Get high watermark
-		_, highWatermark, err := c.consumer.QueryWatermarkOffsets(topic, partition, 5000)
+		highWatermark, err := c.client.GetHighWatermark(tpo.Topic, tpo.Partition)
 		if err != nil {
-			log.Printf("Failed to query watermark for %s[%d]: %v", topic, partition, err)
+			log.Printf("Failed to get high watermark for %s[%d]: %v", tpo.Topic, tpo.Partition, err)
 			continue
 		}
 
-		// Update log end offset metric
-		metrics.LogEndOffset.WithLabelValues(topic, partitionStr).Set(float64(highWatermark))
+		metrics.LogEndOffset.WithLabelValues(tpo.Topic, partitionStr).Set(float64(highWatermark))
 
-		// Get committed offset
-		committedOffset := topicPartition.Offset
-
-		if committedOffset == kafka.OffsetInvalid {
+		// Skip if no committed offset
+		if tpo.Offset == kafka.OffsetInvalid {
 			continue
 		}
 
 		// Update current offset metric
-		metrics.ConsumerCurrentOffset.WithLabelValues(groupID, topic, partitionStr).Set(float64(committedOffset))
+		metrics.ConsumerCurrentOffset.WithLabelValues(groupID, tpo.Topic, partitionStr).Set(float64(tpo.Offset))
 
 		// Calculate and update lag
-		lag := int64(highWatermark) - int64(committedOffset)
+		lag := highWatermark - int64(tpo.Offset)
 		if lag < 0 {
 			lag = 0
 		}
 
-		metrics.ConsumerLag.WithLabelValues(groupID, topic, partitionStr).Set(float64(lag))
+		metrics.ConsumerLag.WithLabelValues(groupID, tpo.Topic, partitionStr).Set(float64(lag))
 	}
 
 	return nil
@@ -174,4 +145,68 @@ func (c *Collector) StartPeriodicCollection(ctx context.Context, interval time.D
 			}
 		}
 	}
+}
+
+// PrintLagTable prints lag information in table format - CLI mode
+func (c *Collector) PrintLagTable(ctx context.Context, groupFilter string) error {
+
+	fmt.Printf("%-35s %-25s %-10s %-15s %-15s %-10s\n",
+		"GROUP", "TOPIC", "PARTITION", "LOGEND", "COMMITTED", "LAG")
+	fmt.Println("------------------------------------------------------------------------------------------------")
+
+	groupIDs, err := c.client.ListConsumerGroups(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list consumer groups: %w", err)
+	}
+
+	if groupFilter != "" {
+		filtered := []string{}
+		for _, gid := range groupIDs {
+			if gid == groupFilter {
+				filtered = append(filtered, gid)
+				break
+			}
+		}
+		if len(filtered) == 0 {
+			return fmt.Errorf("consumer group '%s' not found", groupFilter)
+		}
+		groupIDs = filtered
+	}
+
+	// Process each group
+	for _, groupID := range groupIDs {
+		offsets, err := c.client.GetConsumerGroupOffsets(ctx, groupID)
+		if err != nil {
+			fmt.Printf("Error getting offsets for group %s: %v\n", groupID, err)
+			continue
+		}
+
+		for _, tpo := range offsets {
+			highWatermark, err := c.client.GetHighWatermark(tpo.Topic, tpo.Partition)
+			if err != nil {
+				fmt.Printf("Error getting high watermark for %s[%d]: %v\n",
+					tpo.Topic, tpo.Partition, err)
+				continue
+			}
+
+			var lag int64
+			var committedStr string
+
+			if tpo.Offset == kafka.OffsetInvalid {
+				committedStr = "NO_COMMIT"
+				lag = highWatermark
+			} else {
+				committedStr = fmt.Sprintf("%d", tpo.Offset)
+				lag = highWatermark - int64(tpo.Offset)
+				if lag < 0 {
+					lag = 0
+				}
+			}
+
+			fmt.Printf("%-35s %-25s %-10d %-15d %-15s %-10d\n",
+				groupID, tpo.Topic, tpo.Partition, highWatermark, committedStr, lag)
+		}
+	}
+
+	return nil
 }
