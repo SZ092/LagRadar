@@ -71,3 +71,51 @@ var (
 		},
 	)
 )
+
+// New metrics for sliding window
+var (
+	// ConsumerGroupStatus represents the overall health of a consumer group
+	ConsumerGroupStatus = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kafka_consumer_group_status",
+			Help: "Status of consumer group (0=OK, 1=WARNING, 2=ERROR)",
+		},
+		[]string{"consumer_group"},
+	)
+
+	// ConsumerGroupErrorPartitions is the number of partitions in error state
+	ConsumerGroupErrorPartitions = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kafka_consumer_group_error_partitions",
+			Help: "Number of partitions in error state",
+		},
+		[]string{"consumer_group"},
+	)
+
+	// ConsumerGroupWarningPartitions is the number of partitions in warning state
+	ConsumerGroupWarningPartitions = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kafka_consumer_group_warning_partitions",
+			Help: "Number of partitions in warning state",
+		},
+		[]string{"consumer_group"},
+	)
+
+	// ConsumerPartitionStatus represents the status of a specific partition
+	ConsumerPartitionStatus = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kafka_consumer_partition_status",
+			Help: "Status of consumer partition (0=OK, 1=WARNING, 2=ERROR, 3=STOPPED, 4=STALLED, -1=UNKNOWN)",
+		},
+		[]string{"consumer_group", "topic", "partition"},
+	)
+
+	// ConsumerPartitionLagTrend represents the lag trend for a partition
+	ConsumerPartitionLagTrend = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kafka_consumer_partition_lag_trend",
+			Help: "Lag trend for partition (0=unknown, 1=stable, 2=increasing, 3=decreasing, 4=stopped/stalled)",
+		},
+		[]string{"consumer_group", "topic", "partition"},
+	)
+)
