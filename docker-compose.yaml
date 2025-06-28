@@ -63,6 +63,8 @@ services:
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
     networks:
       - lagradar-network
 
