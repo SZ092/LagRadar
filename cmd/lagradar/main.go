@@ -1,116 +1,224 @@
 package main
 
 import (
+	"LagRadar/internal/collector"
 	"context"
-	"flag"
+	"encoding/json"
 	"fmt"
-	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"gopkg.in/yaml.v3"
+	"io/ioutil"
+	"log"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
+// Config represents the application configuration
+type Config struct {
+	Kafka struct {
+		Brokers []string `yaml:"brokers"`
+	} `yaml:"kafka"`
+
+	Collector struct {
+		CheckInterval    string  `yaml:"check_interval"`
+		WindowSize       int     `yaml:"window_size"`
+		MinWindowSize    int     `yaml:"min_window_size"`
+		StalledThreshold float64 `yaml:"stalled_threshold"`
+	} `yaml:"collector"`
+
+	HTTP struct {
+		Address     string `yaml:"address"`
+		MetricsPath string `yaml:"metrics_path"`
+	} `yaml:"http"`
+}
+
 func main() {
-	var brokers string
-	var groupFilter string
 
-	flag.StringVar(&brokers, "brokers", "localhost:9092", "Kafka broker addresses")
-	flag.StringVar(&groupFilter, "group", "", "Specific consumer group to monitor (empty for all groups)")
-	flag.Parse()
-
-	admin, err := kafka.NewAdminClient(&kafka.ConfigMap{"bootstrap.servers": brokers})
+	config, err := loadConfig("config.yaml")
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to load config: %v", err)
 	}
-	defer admin.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.Printf("Starting LagRadar...")
+
+	checkInterval, err := time.ParseDuration(config.Collector.CheckInterval)
+	if err != nil {
+		log.Fatalf("Invalid check interval: %v", err)
+	}
+
+	// Create sliding window configuration
+	collectorConfig := collector.SlidingWindowConfig{
+		WindowSize:       config.Collector.WindowSize,
+		MinWindowSize:    config.Collector.MinWindowSize,
+		StalledThreshold: config.Collector.StalledThreshold,
+		CheckInterval:    checkInterval,
+	}
+
+	// Create collector
+	brokers := joinBrokers(config.Kafka.Brokers)
+	c, err := collector.NewWithSlidingWindow(brokers, collectorConfig)
+	if err != nil {
+		log.Fatalf("Failed to create collector: %v", err)
+	}
+	defer c.Close()
+
+	// Setup context for graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	groupsResult, err := admin.ListConsumerGroups(ctx)
+	// Start HTTP server
+	srv := startHTTPServer(config, c)
+
+	// Start periodic collection
+	go c.StartPeriodicCollection(ctx, checkInterval)
+
+	// Wait for shutdown signal
+	waitForShutdown()
+
+	log.Println("Shutting down...")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
+	cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("HTTP server shutdown error: %v", err)
+	}
+
+	log.Println("Shutdown complete")
+}
+
+func loadConfig(filename string) (*Config, error) {
+	data, err := ioutil.ReadFile(filename)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	var groupIDs []string
+	var config Config
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
 
-	if groupFilter != "" {
+	// Set defaults if not specified
+	if config.HTTP.Address == "" {
+		config.HTTP.Address = ":8080"
+	}
+	if config.HTTP.MetricsPath == "" {
+		config.HTTP.MetricsPath = "/metrics"
+	}
+	if config.Collector.CheckInterval == "" {
+		config.Collector.CheckInterval = "60s"
+	}
+	if config.Collector.WindowSize == 0 {
+		config.Collector.WindowSize = 10
+	}
+	if config.Collector.MinWindowSize == 0 {
+		config.Collector.MinWindowSize = 3
+	}
+	if config.Collector.StalledThreshold == 0 {
+		config.Collector.StalledThreshold = 0.1
+	}
 
-		groupIDs = []string{groupFilter}
-		fmt.Printf("Monitoring specific consumer group: %s\n\n", groupFilter)
-	} else {
+	return &config, nil
+}
 
-		for _, group := range groupsResult.Valid {
-			groupIDs = append(groupIDs, group.GroupID)
+func startHTTPServer(config *Config, c *collector.Collector) *http.Server {
+	mux := http.NewServeMux()
+
+	// Prometheus metrics endpoint
+	mux.Handle(config.HTTP.MetricsPath, promhttp.Handler())
+
+	// Health check endpoint
+	mux.HandleFunc("/health", healthHandler)
+
+	// API endpoints
+	mux.HandleFunc("/api/v1/status", statusHandler(c))
+	mux.HandleFunc("/api/v1/status/", groupStatusHandler(c))
+
+	srv := &http.Server{
+		Addr:    config.HTTP.Address,
+		Handler: mux,
+	}
+
+	go func() {
+		log.Printf("Starting HTTP server on %s", config.HTTP.Address)
+		log.Printf("Metrics endpoint: %s", config.HTTP.MetricsPath)
+
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("HTTP server error: %v", err)
 		}
-		fmt.Printf("Monitoring all %d consumer groups\n\n", len(groupIDs))
-	}
+	}()
 
-	if len(groupIDs) == 0 {
-		fmt.Println("No consumer groups found")
-		return
-	}
+	return srv
+}
 
-	consumer, err := kafka.NewConsumer(&kafka.ConfigMap{
-		"bootstrap.servers": brokers,
-		"group.id":          "lagradar_tmp",
-		"auto.offset.reset": "earliest",
-	})
-	if err != nil {
-		panic(err)
-	}
-	defer consumer.Close()
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintln(w, "OK")
+}
 
-	fmt.Printf("%-35s %-25s %-10s %-15s %-15s %-10s\n", "GROUP", "TOPIC", "PARTITION", "LOGEND", "COMMITTED", "LAG")
-	fmt.Println("------------------------------------------------------------------------------------------------")
-
-	for _, groupID := range groupIDs {
-
-		offsetsResult, err := admin.ListConsumerGroupOffsets(ctx, []kafka.ConsumerGroupTopicPartitions{
-			{
-				Group: groupID,
-			},
-		})
-
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error listing offsets for group %s: %v\n", groupID, err)
-			continue
+func statusHandler(c *collector.Collector) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
 		}
 
-		if len(offsetsResult.ConsumerGroupsTopicPartitions) == 0 {
-			continue
-		}
+		statuses := c.GetAllGroupStatuses()
 
-		groupOffsets := offsetsResult.ConsumerGroupsTopicPartitions[0]
-
-		for _, topicPartition := range groupOffsets.Partitions {
-			if topicPartition.Topic == nil {
-				continue
-			}
-
-			topic := *topicPartition.Topic
-			partition := topicPartition.Partition
-
-			_, logend, err := consumer.QueryWatermarkOffsets(topic, partition, 5000)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "QueryWatermarkOffsets error for %s[%d]: %v\n", topic, partition, err)
-				continue
-			}
-
-			committedOffset := topicPartition.Offset
-
-			if committedOffset == kafka.OffsetInvalid {
-				fmt.Printf("%-35s %-25s %-10d %-15d %-15s %-10s\n",
-					groupID, topic, partition, logend, "NO_COMMIT", "N/A")
-				continue
-			}
-
-			lag := int64(logend) - int64(committedOffset)
-			if lag < 0 {
-				lag = 0
-			}
-
-			fmt.Printf("%-35s %-25s %-10d %-15d %-15d %-10d\n",
-				groupID, topic, partition, logend, committedOffset, lag)
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(statuses); err != nil {
+			log.Printf("Error encoding response: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
 		}
 	}
+}
+
+func groupStatusHandler(c *collector.Collector) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		groupID := r.URL.Path[len("/api/v1/status/"):]
+		if groupID == "" {
+			http.Error(w, "Group ID required", http.StatusBadRequest)
+			return
+		}
+
+		status, exists := c.GetGroupStatus(groupID)
+		if !exists {
+			http.Error(w, fmt.Sprintf("Consumer group %s not found", groupID), http.StatusNotFound)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(status); err != nil {
+			log.Printf("Error encoding response: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		}
+	}
+}
+
+func waitForShutdown() {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-sigChan
+	log.Printf("Received signal %v", sig)
+}
+
+func joinBrokers(brokers []string) string {
+	result := ""
+	for i, broker := range brokers {
+		if i > 0 {
+			result += ","
+		}
+		result += broker
+	}
+	return result
 }
