@@ -1,0 +1,15 @@
+# LagRadar Configuration
+
+kafka:
+  brokers:
+    - kafka:29092
+
+collector:
+  check_interval: 60s
+  window_size: 10
+  min_window_size: 3
+  stalled_threshold: 0.1
+
+http:
+  address: :8080
+  metrics_path: /metrics
