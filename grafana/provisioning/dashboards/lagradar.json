@@ -27,38 +27,6 @@
       "description": "Overview of all consumer groups health status",
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "center",
-            "cellOptions": {
-              "type": "color-text"
-            },
-            "inspect": false
-          },
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "color": "green",
-                  "index": 0,
-                  "text": "✅ OK"
-                },
-                "1": {
-                  "color": "yellow",
-                  "index": 1,
-                  "text": "⚠️ WARNING"
-                },
-                "2": {
-                  "color": "red",
-                  "index": 2,
-                  "text": "❌ ERROR"
-                }
-              },
-              "type": "value"
-            }
-          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -67,9 +35,51 @@
                 "value": null
               }
             ]
+          },
+          "custom": {
+            "align": "center",
+            "cellOptions": {
+              "type": "auto"
+            }
           }
         },
         "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "✅ OK",
+                        "color": "green"
+                      },
+                      "1": {
+                        "text": "⚠️ WARNING",
+                        "color": "yellow"
+                      },
+                      "2": {
+                        "text": "❌ ERROR",
+                        "color": "red"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
           {
             "matcher": {
               "id": "byName",
@@ -81,10 +91,96 @@
                 "value": "short"
               },
               {
+                "id": "custom.width",
+                "value": 120
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Error Partitions"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "auto"
+                  "type": "color-text"
                 }
+              },
+              {
+                "id": "custom.width",
+                "value": 130
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Warning Partitions"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 140
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Consumer Group"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 200
               }
             ]
           }
@@ -98,22 +194,17 @@
       },
       "id": 1,
       "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
         "showHeader": true,
         "sortBy": [
           {
             "desc": true,
             "displayName": "Total Lag"
           }
-        ]
+        ],
+        "footer": {
+          "show": false,
+          "reducer": ["sum"]
+        }
       },
       "pluginVersion": "10.2.3",
       "targets": [
@@ -123,8 +214,6 @@
           "expr": "kafka_consumer_group_status",
           "format": "table",
           "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
           "refId": "A"
         },
         {
@@ -132,9 +221,7 @@
           "editorMode": "code",
           "expr": "sum by (consumer_group) (kafka_consumer_lag)",
           "format": "table",
-          "hide": false,
           "instant": true,
-          "range": false,
           "refId": "B"
         },
         {
@@ -142,9 +229,7 @@
           "editorMode": "code",
           "expr": "kafka_consumer_group_error_partitions",
           "format": "table",
-          "hide": false,
           "instant": true,
-          "range": false,
           "refId": "C"
         },
         {
@@ -152,9 +237,7 @@
           "editorMode": "code",
           "expr": "kafka_consumer_group_warning_partitions",
           "format": "table",
-          "hide": false,
           "instant": true,
-          "range": false,
           "refId": "D"
         }
       ],
@@ -165,6 +248,37 @@
           "options": {}
         },
         {
+          "id": "groupBy",
+          "options": {
+            "fields": {
+              "Consumer Group": {
+                "aggregations": [],
+                "operation": "groupby"
+              },
+              "Value #A": {
+                "aggregations": ["lastNotNull"],
+                "operation": "aggregate"
+              },
+              "Value #B": {
+                "aggregations": ["lastNotNull"],
+                "operation": "aggregate"
+              },
+              "Value #C": {
+                "aggregations": ["lastNotNull"],
+                "operation": "aggregate"
+              },
+              "Value #D": {
+                "aggregations": ["lastNotNull"],
+                "operation": "aggregate"
+              },
+              "consumer_group": {
+                "aggregations": [],
+                "operation": "groupby"
+              }
+            }
+          }
+        },
+        {
           "id": "organize",
           "options": {
             "excludeByName": {
@@ -172,15 +286,36 @@
               "Time 1": true,
               "Time 2": true,
               "Time 3": true,
-              "Time 4": true
+              "Time 4": true,
+              "__name__": true,
+              "__name__ 1": true,
+              "__name__ 2": true,
+              "__name__ 3": true,
+              "__name__ 4": true,
+              "instance": true,
+              "job": true,
+              "job 1": true,
+              "job 2": true,
+              "job 3": true,
+              "job 4": true,
+              "instance 1": true,
+              "instance 2": true,
+              "instance 3": true,
+              "instance 4": true
             },
-            "indexByName": {},
+            "indexByName": {
+              "consumer_group": 0,
+              "Value #A (lastNotNull)": 1,
+              "Value #B (lastNotNull)": 2,
+              "Value #C (lastNotNull)": 3,
+              "Value #D (lastNotNull)": 4
+            },
             "renameByName": {
-              "Value #A": "Status",
-              "Value #B": "Total Lag",
-              "Value #C": "Error Partitions",
-              "Value #D": "Warning Partitions",
-              "consumer_group": "Consumer Group"
+              "consumer_group": "Consumer Group",
+              "Value #A (lastNotNull)": "Status",
+              "Value #B (lastNotNull)": "Total Lag",
+              "Value #C (lastNotNull)": "Error Partitions",
+              "Value #D (lastNotNull)": "Warning Partitions"
             }
           }
         }
@@ -728,20 +863,30 @@
                 "value": [
                   {
                     "options": {
+                      "0": {
+                        "color": "orange",
+                        "index": 0,
+                        "text": "? Unknown"
+                      },
                       "1": {
                         "color": "green",
-                        "index": 0,
+                        "index": 1,
                         "text": "→ Stable"
                       },
                       "2": {
                         "color": "yellow",
-                        "index": 1,
+                        "index": 2,
                         "text": "↑ Increasing"
                       },
                       "3": {
                         "color": "blue",
-                        "index": 2,
+                        "index": 3,
                         "text": "↓ Decreasing"
+                      },
+                      "4": {
+                        "color": "red",
+                        "index": 4,
+                        "text": "X Stopped"
                       }
                     },
                     "type": "value"
@@ -873,6 +1018,29 @@
         "skipUrlSync": false,
         "sort": 1,
         "type": "query"
+      },
+      {
+        "name": "consumer_group",
+        "label": "Consumer Group",
+        "query": "label_values(kafka_consumer_lag, consumer_group)",
+        "multi": true,
+        "includeAll": true
+      },
+      {
+        "name": "topic",
+        "label": "Topic",
+        "query": "label_values(kafka_consumer_lag{consumer_group=~\"$consumer_group\"}, topic)",
+        "multi": true,
+        "includeAll": true
+      },
+      {
+        "name": "status_filter",
+        "label": "Status",
+        "options": [
+          {"text": "All", "value": ".*"},
+          {"text": "OK Only", "value": "0"},
+          {"text": "Problems Only", "value": "[1-4]"}
+        ]
       }
     ]
   },
