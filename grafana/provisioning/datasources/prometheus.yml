@@ -1,7 +1,4 @@
 # Grafana datasource configuration for Prometheus
-
-apiVersion: 1
-
 datasources:
   - name: Prometheus
     type: prometheus

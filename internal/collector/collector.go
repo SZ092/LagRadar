@@ -155,22 +155,33 @@ func (c *Collector) CollectMetrics(ctx context.Context) error {
 	}
 
 	// Collect metrics and evaluate status for each group
+	sem := make(chan struct{}, 10)
+	var wg sync.WaitGroup
+
 	for _, groupID := range groupIDs {
-		groupStatus, err := c.collectAndEvaluateGroup(ctx, groupID)
-		if err != nil {
-			log.Printf("Error collecting metrics for group %s: %v", groupID, err)
-			metrics.ScrapeErrors.Inc()
-			continue
-		}
+		wg.Add(1)
+		sem <- struct{}{}
 
-		// Store the latest status
-		c.statusStoreMu.Lock()
-		c.statusStore[groupID] = groupStatus
-		c.statusStoreMu.Unlock()
+		go func(gid string) {
+			defer wg.Done()
+			defer func() { <-sem }()
 
-		c.updateStatusMetrics(groupStatus)
+			groupStatus, err := c.collectAndEvaluateGroup(ctx, gid)
+			if err != nil {
+				log.Printf("Error collecting metrics for group %s: %v", gid, err)
+				metrics.ScrapeErrors.Inc()
+				return
+			}
+
+			c.statusStoreMu.Lock()
+			c.statusStore[gid] = groupStatus
+			c.statusStoreMu.Unlock()
+
+			c.updateStatusMetrics(groupStatus)
+		}(groupID)
 	}
 
+	wg.Wait()
 	return nil
 }
 
