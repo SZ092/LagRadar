@@ -14,7 +14,7 @@ RUN go mod download
 COPY . .
 
 # Build the application with CGO enabled (required for confluent-kafka-go)
-RUN go build -tags musl -o lagradar ./cmd/lagradar/main.go
+RUN go build -tags musl -o lagradar ./cmd/main.go
 
 # Runtime stage
 FROM alpine:latest
