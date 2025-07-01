@@ -223,6 +223,7 @@ func TestCollectMetrics_HighWatermarkError(t *testing.T) {
 
 // TestCollectMetrics_InvalidOffset tests handling of invalid offsets
 func TestCollectMetrics_InvalidOffset(t *testing.T) {
+	metrics.ConsumerLag.Reset()
 	metrics.LogEndOffset.Reset()
 
 	mockClient := new(MockKafkaClient)
@@ -252,8 +253,9 @@ func TestCollectMetrics_InvalidOffset(t *testing.T) {
 	assert.Equal(t, float64(50), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("test-group", "test-topic", "1")))
 	assert.Equal(t, float64(150), testutil.ToFloat64(metrics.ConsumerCurrentOffset.WithLabelValues("test-group", "test-topic", "1")))
 
-	// Log end offset should be recorded for both partitions
-	assert.Equal(t, float64(100), testutil.ToFloat64(metrics.LogEndOffset.WithLabelValues("test-topic", "0")))
+	// Invalid offset should NOT have LogEndOffset set - should be 0
+	assert.Equal(t, float64(0), testutil.ToFloat64(metrics.LogEndOffset.WithLabelValues("test-topic", "0")))
+	// Valid offset should have LogEndOffset
 	assert.Equal(t, float64(200), testutil.ToFloat64(metrics.LogEndOffset.WithLabelValues("test-topic", "1")))
 
 }
