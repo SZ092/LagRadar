@@ -1,9 +1,9 @@
 package main
 
 import (
+	"LagRadar/internal/api"
 	"LagRadar/internal/collector"
 	"context"
-	"encoding/json"
 	"fmt"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gopkg.in/yaml.v3"
@@ -23,10 +23,14 @@ type Config struct {
 	} `yaml:"kafka"`
 
 	Collector struct {
-		CheckInterval    string  `yaml:"check_interval"`
-		WindowSize       int     `yaml:"window_size"`
-		MinWindowSize    int     `yaml:"min_window_size"`
-		StalledThreshold float64 `yaml:"stalled_threshold"`
+		CheckInterval          string        `yaml:"check_interval"`
+		WindowSize             int           `yaml:"window_size"`
+		MinWindowSize          int           `yaml:"min_window_size"`
+		StalledConsumptionRate float64       `yaml:"stalled_threshold"`
+		RapidLagIncreaseRate   float64       `yaml:"rapid_lag_increase_threshold"`
+		LagTrendThreshold      float64       `yaml:"lag_trend_threshold"`
+		InactivityTimeout      time.Duration `yaml:"inactivity_timeout"`
+		MaxConcurrency         int           `yaml:"max_concurrency"`
 	} `yaml:"collector"`
 
 	HTTP struct {
@@ -50,17 +54,20 @@ func main() {
 		log.Fatalf("Invalid check interval: %v", err)
 	}
 
-	// Create sliding window configuration
-	collectorConfig := collector.SlidingWindowConfig{
-		WindowSize:       config.Collector.WindowSize,
-		MinWindowSize:    config.Collector.MinWindowSize,
-		StalledThreshold: config.Collector.StalledThreshold,
-		CheckInterval:    checkInterval,
+	collectorConfig := collector.Config{
+		WindowSize:             config.Collector.WindowSize,
+		MinWindowSize:          config.Collector.MinWindowSize,
+		CheckInterval:          checkInterval,
+		StalledConsumptionRate: config.Collector.StalledConsumptionRate,
+		RapidLagIncreaseRate:   config.Collector.RapidLagIncreaseRate,
+		LagTrendThreshold:      config.Collector.LagTrendThreshold,
+		InactivityTimeout:      config.Collector.InactivityTimeout,
+		MaxConcurrency:         config.Collector.MaxConcurrency,
 	}
 
 	// Create collector
 	brokers := joinBrokers(config.Kafka.Brokers)
-	c, err := collector.NewWithSlidingWindow(brokers, collectorConfig)
+	c, err := collector.NewWithConfig(brokers, collectorConfig)
 	if err != nil {
 		log.Fatalf("Failed to create collector: %v", err)
 	}
@@ -74,7 +81,7 @@ func main() {
 	srv := startHTTPServer(config, c)
 
 	// Start periodic collection
-	go c.StartPeriodicCollection(ctx, checkInterval)
+	go c.StartPeriodicCollection(ctx)
 
 	// Wait for shutdown signal
 	waitForShutdown()
@@ -103,26 +110,6 @@ func loadConfig(filename string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
-	// Set defaults if not specified
-	if config.HTTP.Address == "" {
-		config.HTTP.Address = ":8080"
-	}
-	if config.HTTP.MetricsPath == "" {
-		config.HTTP.MetricsPath = "/metrics"
-	}
-	if config.Collector.CheckInterval == "" {
-		config.Collector.CheckInterval = "60s"
-	}
-	if config.Collector.WindowSize == 0 {
-		config.Collector.WindowSize = 10
-	}
-	if config.Collector.MinWindowSize == 0 {
-		config.Collector.MinWindowSize = 3
-	}
-	if config.Collector.StalledThreshold == 0 {
-		config.Collector.StalledThreshold = 0.1
-	}
-
 	return &config, nil
 }
 
@@ -133,11 +120,13 @@ func startHTTPServer(config *Config, c *collector.Collector) *http.Server {
 	mux.Handle(config.HTTP.MetricsPath, promhttp.Handler())
 
 	// Health check endpoint
-	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/health", api.HealthHandler)
 
 	// API endpoints
-	mux.HandleFunc("/api/v1/status", statusHandler(c))
-	mux.HandleFunc("/api/v1/status/", groupStatusHandler(c))
+	mux.HandleFunc("/api/v1/status", api.StatusHandler(c))
+	mux.HandleFunc("/api/v1/status/", api.GroupStatusHandler(c))
+	mux.HandleFunc("/api/v1/groups", api.GroupsHandler(c))
+	mux.HandleFunc("/api/v1/config", api.ConfigHandler(config))
 
 	srv := &http.Server{
 		Addr:    config.HTTP.Address,
@@ -154,55 +143,6 @@ func startHTTPServer(config *Config, c *collector.Collector) *http.Server {
 	}()
 
 	return srv
-}
-
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintln(w, "OK")
-}
-
-func statusHandler(c *collector.Collector) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		statuses := c.GetAllGroupStatuses()
-
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(statuses); err != nil {
-			log.Printf("Error encoding response: %v", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-		}
-	}
-}
-
-func groupStatusHandler(c *collector.Collector) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		groupID := r.URL.Path[len("/api/v1/status/"):]
-		if groupID == "" {
-			http.Error(w, "Group ID required", http.StatusBadRequest)
-			return
-		}
-
-		status, exists := c.GetGroupStatus(groupID)
-		if !exists {
-			http.Error(w, fmt.Sprintf("Consumer group %s not found", groupID), http.StatusNotFound)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(status); err != nil {
-			log.Printf("Error encoding response: %v", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-		}
-	}
 }
 
 func waitForShutdown() {

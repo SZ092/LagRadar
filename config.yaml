@@ -2,14 +2,29 @@
 
 kafka:
   brokers:
-    - kafka:29092
+    - kafka-1:29092
+    - kafka-2:29093
+    - kafka-3:29094
 
 collector:
-  check_interval: 60s
-  window_size: 10
-  min_window_size: 3
-  stalled_threshold: 0.1
+  window:
+    size: 20
+    min_size: 5
+  check_interval: "30s"
+  max_concurrency: 10
+  thresholds:
+    stalled_consumption_rate: 0.1
+    rapid_lag_increase_rate: 100.0
+    lag_trend_threshold: 0.1
+    inactivity_timeout: "5m"
 
 http:
   address: :8080
   metrics_path: /metrics
+
+server:
+  api:
+    enabled: true
+    address: "0.0.0.0:8080"
+    read_timeout: "30s"
+    write_timeout: "30s"
