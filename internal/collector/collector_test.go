@@ -50,8 +50,18 @@ func (m *MockKafkaClient) GetConsumerGroupMembers(ctx context.Context, groupIDs 
 }
 
 // Test helper to create a collector with a mock client
-func newTestCollector(mockClient *MockKafkaClient) *Collector {
-	return NewWithClient(mockClient)
+func newTestCollectorWithConfig(mockClient *MockKafkaClient) *Collector {
+	testConfig := Config{
+		WindowSize:             5,
+		MinWindowSize:          2,
+		CheckInterval:          100 * time.Millisecond,
+		StalledConsumptionRate: 0.1,
+		RapidLagIncreaseRate:   1.0,
+		LagTrendThreshold:      0.1,
+		InactivityTimeout:      5 * time.Second,
+		MaxConcurrency:         2,
+	}
+	return NewWithClient(mockClient, testConfig)
 }
 
 // TestCollectMetrics_Success tests successful metrics collection
@@ -63,7 +73,7 @@ func TestCollectMetrics_Success(t *testing.T) {
 	metrics.ConsumerGroupMembers.Reset()
 
 	mockClient := new(MockKafkaClient)
-	collector := newTestCollector(mockClient)
+	collector := newTestCollectorWithConfig(mockClient)
 
 	ctx := context.Background()
 
@@ -119,7 +129,7 @@ func TestCollectMetrics_ListGroupsError(t *testing.T) {
 	initialErrors := testutil.ToFloat64(metrics.ScrapeErrors)
 
 	mockClient := new(MockKafkaClient)
-	collector := newTestCollector(mockClient)
+	collector := newTestCollectorWithConfig(mockClient)
 
 	ctx := context.Background()
 
@@ -143,7 +153,7 @@ func TestCollectMetrics_PartialGroupError(t *testing.T) {
 	metrics.ConsumerLag.Reset()
 
 	mockClient := new(MockKafkaClient)
-	collector := newTestCollector(mockClient)
+	collector := newTestCollectorWithConfig(mockClient)
 
 	ctx := context.Background()
 
@@ -181,7 +191,7 @@ func TestCollectMetrics_HighWatermarkError(t *testing.T) {
 	metrics.LogEndOffset.Reset()
 
 	mockClient := new(MockKafkaClient)
-	collector := newTestCollector(mockClient)
+	collector := newTestCollectorWithConfig(mockClient)
 
 	ctx := context.Background()
 
@@ -216,7 +226,7 @@ func TestCollectMetrics_InvalidOffset(t *testing.T) {
 	metrics.LogEndOffset.Reset()
 
 	mockClient := new(MockKafkaClient)
-	collector := newTestCollector(mockClient)
+	collector := newTestCollectorWithConfig(mockClient)
 
 	ctx := context.Background()
 
@@ -251,7 +261,7 @@ func TestCollectMetrics_InvalidOffset(t *testing.T) {
 // TestStartPeriodicCollection tests the periodic collection loop
 func TestStartPeriodicCollection(t *testing.T) {
 	mockClient := new(MockKafkaClient)
-	collector := newTestCollector(mockClient)
+	collector := newTestCollectorWithConfig(mockClient)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -263,7 +273,7 @@ func TestStartPeriodicCollection(t *testing.T) {
 	// Start periodic collection with 100 ms interval
 	done := make(chan bool)
 	go func() {
-		collector.StartPeriodicCollection(ctx, 100*time.Millisecond)
+		collector.StartPeriodicCollection(ctx)
 		done <- true
 	}()
 
@@ -282,10 +292,43 @@ func TestStartPeriodicCollection(t *testing.T) {
 	mockClient.AssertNumberOfCalls(t, "ListConsumerGroups", 3)
 }
 
+func TestCollectMetrics_MultiGroupSamePartition(t *testing.T) {
+	metrics.ConsumerLag.Reset()
+	metrics.ConsumerCurrentOffset.Reset()
+
+	mockClient := new(MockKafkaClient)
+	collector := newTestCollectorWithConfig(mockClient)
+	ctx := context.Background()
+
+	consumerGroups := []string{"groupA", "groupB"}
+	mockClient.On("ListConsumerGroups", ctx).Return(consumerGroups, nil)
+	mockClient.On("GetConsumerGroupMembers", ctx, consumerGroups).Return(map[string]int{
+		"groupA": 1, "groupB": 1,
+	}, nil)
+
+	// Both groups consume the same topic-partition but at different offsets
+	groupAOffsets := []kafkaclient.TopicPartitionOffset{
+		{Topic: "topic1", Partition: 0, Offset: 100},
+	}
+	groupBOffsets := []kafkaclient.TopicPartitionOffset{
+		{Topic: "topic1", Partition: 0, Offset: 80},
+	}
+
+	mockClient.On("GetConsumerGroupOffsets", ctx, "groupA").Return(groupAOffsets, nil)
+	mockClient.On("GetConsumerGroupOffsets", ctx, "groupB").Return(groupBOffsets, nil)
+	mockClient.On("GetHighWatermark", "topic1", int32(0)).Return(int64(150), nil).Twice()
+
+	err := collector.CollectMetrics(ctx)
+	assert.NoError(t, err)
+
+	assert.Equal(t, float64(50), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("groupA", "topic1", "0")))
+	assert.Equal(t, float64(70), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("groupB", "topic1", "0")))
+}
+
 // Benchmark test
 func BenchmarkCollectMetrics(b *testing.B) {
 	mockClient := new(MockKafkaClient)
-	collector := newTestCollector(mockClient)
+	collector := newTestCollectorWithConfig(mockClient)
 
 	ctx := context.Background()
 
