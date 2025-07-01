@@ -1,7 +1,6 @@
 module LagRadar
 
 go 1.24.4
-
 require (
 	github.com/confluentinc/confluent-kafka-go/v2 v2.10.1
 	github.com/prometheus/client_golang v1.17.0
@@ -24,6 +23,3 @@ require (
 	golang.org/x/sys v0.25.0 // indirect
 	google.golang.org/protobuf v1.33.0 // indirect
 )
-
-// go command - update dependency
-// go mod tidy
