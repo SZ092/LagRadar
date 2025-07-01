@@ -8,20 +8,40 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"log"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
-// ConsumerStatus represents the health status of a consumer
+// ConsumerStatus represents the operational state of a consumer
 type ConsumerStatus string
 
 const (
-	StatusOK      ConsumerStatus = "OK"
-	StatusWarning ConsumerStatus = "WARNING"
-	StatusError   ConsumerStatus = "ERROR"
-	StatusStopped ConsumerStatus = "STOPPED"
-	StatusStalled ConsumerStatus = "STALLED"
-	StatusUnknown ConsumerStatus = "UNKNOWN"
+	StatusActive  ConsumerStatus = "ACTIVE"  // Consumer is actively processing messages
+	StatusLagging ConsumerStatus = "LAGGING" // Consumer is active but falling behind
+	StatusStalled ConsumerStatus = "STALLED" // Consumer is making very slow progress
+	StatusStopped ConsumerStatus = "STOPPED" // Consumer has completely stopped
+	StatusEmpty   ConsumerStatus = "EMPTY"   // No lag, consumer is caught up
+	StatusUnknown ConsumerStatus = "UNKNOWN" // Not enough data to determine
+)
+
+// LagTrend represents the direction of lag change over time
+type LagTrend string
+
+const (
+	TrendIncreasing LagTrend = "INCREASING"
+	TrendDecreasing LagTrend = "DECREASING"
+	TrendStable     LagTrend = "STABLE"
+	TrendUnknown    LagTrend = "UNKNOWN"
+)
+
+// ConsumerHealth represents the health assessment
+type ConsumerHealth string
+
+const (
+	HealthGood     ConsumerHealth = "GOOD"     // Everything is working well
+	HealthWarning  ConsumerHealth = "WARNING"  // Potential issues detected
+	HealthCritical ConsumerHealth = "CRITICAL" // Serious issues requiring attention
 )
 
 // OffsetRecord represents a single offset check
@@ -39,36 +59,56 @@ type PartitionWindow struct {
 	mu         sync.RWMutex
 }
 
-// PartitionStatus represents the evaluated status of a partition
-type PartitionStatus struct {
-	GroupID            string
-	Topic              string
-	Partition          int32
+// PartitionConsumerStatus represents the status of a specific consumer group on a partition
+type PartitionConsumerStatus struct {
+	GroupID        string
+	Topic          string
+	Partition      int32
+	CurrentOffset  int64
+	HighWatermark  int64
+	CurrentLag     int64
+	LastUpdateTime time.Time
+	// Metrics
 	Status             ConsumerStatus
-	CurrentLag         int64
-	LagTrend           string // "increasing", "decreasing", "stable"
-	Message            string
+	LagTrend           LagTrend
+	Health             ConsumerHealth
+	ConsumptionRate    float64
+	LagChangeRate      float64
 	WindowCompleteness float64
-	LastOffset         int64
-	LastCheckTime      time.Time
+	Message            string
+	IsActive           bool //  If offset changed recently
+	TimeSinceLastMove  time.Duration
 }
 
 // GroupStatus represents the overall status of a consumer group
 type GroupStatus struct {
 	GroupID           string
-	OverallStatus     ConsumerStatus
+	OverallHealth     ConsumerHealth
 	TotalLag          int64
 	PartitionCount    int
-	ErrorPartitions   []PartitionStatus
-	WarningPartitions []PartitionStatus
+	ActivePartitions  int
+	StoppedPartitions int
+	StalledPartitions int
+	MemberCount       int
+	LastUpdateTime    time.Time
+
+	CriticalPartitions []PartitionConsumerStatus
+	WarningPartitions  []PartitionConsumerStatus
+	HealthyPartitions  []PartitionConsumerStatus
 }
 
-// SlidingWindowConfig holds configuration for sliding window evaluation
-type SlidingWindowConfig struct {
-	WindowSize       int
-	MinWindowSize    int
-	StalledThreshold float64       // Percentage of unchanged offsets to consider stalled
-	CheckInterval    time.Duration // How often to check offsets
+// Config holds configuration for the collector
+type Config struct {
+	WindowSize    int           // Number of records to keep in window
+	MinWindowSize int           // Minimum records needed for evaluation
+	CheckInterval time.Duration // How often to check offsets
+
+	StalledConsumptionRate float64       // Consumer is considered stalled if below
+	RapidLagIncreaseRate   float64       // Lag increase is concerning if above
+	LagTrendThreshold      float64       // Percentage change to determine trend
+	InactivityTimeout      time.Duration // Time without offset change to consider stopped
+
+	MaxConcurrency int // Max concurrent group collections
 }
 
 // KafkaClient defines the interface for Kafka operations
@@ -80,9 +120,10 @@ type KafkaClient interface {
 	GetConsumerGroupMembers(ctx context.Context, groupIDs []string) (map[string]int, error)
 }
 
+// Collector is the main collector implementation
 type Collector struct {
 	client        KafkaClient
-	config        SlidingWindowConfig
+	config        Config
 	windows       map[string]*PartitionWindow // key: "group:topic:partition"
 	windowsMu     sync.RWMutex
 	evaluator     *LagEvaluator
@@ -90,8 +131,8 @@ type Collector struct {
 	statusStoreMu sync.RWMutex
 }
 
-// NewWithSlidingWindow creates a new collector with sliding window support
-func NewWithSlidingWindow(brokers string, config SlidingWindowConfig) (*Collector, error) {
+// NewWithConfig creates a new collector with custom configuration - For test
+func NewWithConfig(brokers string, config Config) (*Collector, error) {
 	client, err := kafkaclient.NewClient(&kafkaclient.Config{
 		Brokers:        brokers,
 		ConsumerGroup:  "lagradar_metrics_collector",
@@ -110,8 +151,8 @@ func NewWithSlidingWindow(brokers string, config SlidingWindowConfig) (*Collecto
 	}, nil
 }
 
-// NewWithClient creates a new collector with a custom client - For Test
-func NewWithClient(client KafkaClient, config SlidingWindowConfig) *Collector {
+// NewWithClient creates a new collector with a custom client (for testing)
+func NewWithClient(client KafkaClient, config Config) *Collector {
 	return &Collector{
 		client:      client,
 		config:      config,
@@ -121,6 +162,7 @@ func NewWithClient(client KafkaClient, config SlidingWindowConfig) *Collector {
 	}
 }
 
+// Close closes the collector and releases resources
 func (c *Collector) Close() {
 	if c.client != nil {
 		c.client.Close()
@@ -135,7 +177,6 @@ func (c *Collector) CollectMetrics(ctx context.Context) error {
 		metrics.ScrapeDuration.Set(duration)
 	}()
 
-	// List all consumer groups
 	groupIDs, err := c.client.ListConsumerGroups(ctx)
 	if err != nil {
 		metrics.ScrapeErrors.Inc()
@@ -144,19 +185,20 @@ func (c *Collector) CollectMetrics(ctx context.Context) error {
 
 	log.Printf("Found %d consumer groups", len(groupIDs))
 
-	// Get group member counts
 	memberCounts, err := c.client.GetConsumerGroupMembers(ctx, groupIDs)
 	if err != nil {
 		log.Printf("Warning: failed to get group members: %v", err)
-	} else {
-		for groupID, count := range memberCounts {
-			metrics.ConsumerGroupMembers.WithLabelValues(groupID).Set(float64(count))
-		}
+		memberCounts = make(map[string]int)
 	}
 
-	// Collect metrics and evaluate status for each group
-	sem := make(chan struct{}, 10)
+	// Update member count metrics
+	for groupID, count := range memberCounts {
+		metrics.ConsumerGroupMembers.WithLabelValues(groupID).Set(float64(count))
+	}
+
+	sem := make(chan struct{}, c.config.MaxConcurrency)
 	var wg sync.WaitGroup
+	results := make(chan groupResult, len(groupIDs))
 
 	for _, groupID := range groupIDs {
 		wg.Add(1)
@@ -166,91 +208,155 @@ func (c *Collector) CollectMetrics(ctx context.Context) error {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			groupStatus, err := c.collectAndEvaluateGroup(ctx, gid)
-			if err != nil {
-				log.Printf("Error collecting metrics for group %s: %v", gid, err)
-				metrics.ScrapeErrors.Inc()
-				return
+			groupStatus, err := c.collectGroupMetrics(ctx, gid, memberCounts[gid])
+			results <- groupResult{
+				groupID: gid,
+				status:  groupStatus,
+				err:     err,
 			}
-
-			c.statusStoreMu.Lock()
-			c.statusStore[gid] = groupStatus
-			c.statusStoreMu.Unlock()
-
-			c.updateStatusMetrics(groupStatus)
 		}(groupID)
 	}
 
-	wg.Wait()
+	// Wait for all goroutines to complete
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	for result := range results {
+		if result.err != nil {
+			log.Printf("Error collecting metrics for group %s: %v", result.groupID, result.err)
+			metrics.ScrapeErrors.Inc()
+			continue
+		}
+
+		c.statusStoreMu.Lock()
+		c.statusStore[result.groupID] = result.status
+		c.statusStoreMu.Unlock()
+
+		c.updateMetrics(result.status)
+	}
+
 	return nil
 }
 
-// collectAndEvaluateGroup collects metrics and evaluates status for a consumer group
-func (c *Collector) collectAndEvaluateGroup(ctx context.Context, groupID string) (GroupStatus, error) {
+type groupResult struct {
+	groupID string
+	status  GroupStatus
+	err     error
+}
+
+// collectGroupMetrics collects and evaluates metrics for a single consumer group
+func (c *Collector) collectGroupMetrics(ctx context.Context, groupID string, memberCount int) (GroupStatus, error) {
 	offsets, err := c.client.GetConsumerGroupOffsets(ctx, groupID)
 	if err != nil {
 		return GroupStatus{}, fmt.Errorf("failed to get group offsets: %w", err)
 	}
 
-	var partitionStatuses []PartitionStatus
-	var totalLag int64
-	checkTime := time.Now()
-
-	for _, tpo := range offsets {
-		partitionStr := strconv.Itoa(int(tpo.Partition))
-
-		highWatermark, err := c.client.GetHighWatermark(tpo.Topic, tpo.Partition)
-		if err != nil {
-			log.Printf("Failed to get high watermark for %s[%d]: %v", tpo.Topic, tpo.Partition, err)
-			continue
-		}
-
-		metrics.LogEndOffset.WithLabelValues(tpo.Topic, partitionStr).Set(float64(highWatermark))
-
-		// Skip if no committed offset
-		if tpo.Offset == kafka.OffsetInvalid {
-			continue
-		}
-
-		// Update current offset metric
-		metrics.ConsumerCurrentOffset.WithLabelValues(groupID, tpo.Topic, partitionStr).Set(float64(tpo.Offset))
-
-		// Calculate lag
-		lag := highWatermark - int64(tpo.Offset)
-		if lag < 0 {
-			lag = 0
-		}
-		totalLag += lag
-
-		// Update lag metric
-		metrics.ConsumerLag.WithLabelValues(groupID, tpo.Topic, partitionStr).Set(float64(lag))
-
-		// Add to sliding window
-		windowKey := fmt.Sprintf("%s:%s:%d", groupID, tpo.Topic, tpo.Partition)
-		c.addToWindow(windowKey, OffsetRecord{
-			Offset:         int64(tpo.Offset),
-			HighWatermark:  highWatermark,
-			Lag:            lag,
-			CheckTimestamp: checkTime,
-		})
-
-		// Evaluate partition status
-		partitionStatus := c.evaluatePartition(windowKey, groupID, tpo.Topic, tpo.Partition)
-		partitionStatuses = append(partitionStatuses, partitionStatus)
-
-		// Update partition-level metrics
-		c.updatePartitionMetrics(partitionStatus)
+	groupStatus := GroupStatus{
+		GroupID:        groupID,
+		MemberCount:    memberCount,
+		LastUpdateTime: time.Now(),
+		PartitionCount: len(offsets),
 	}
 
-	// Determine overall group status
-	return c.determineGroupStatus(groupID, partitionStatuses, totalLag), nil
+	var totalLag int64
+	partitionStatuses := make([]PartitionConsumerStatus, 0, len(offsets))
+
+	for _, tpo := range offsets {
+		partitionStatus, err := c.evaluatePartition(ctx, groupID, tpo)
+		if err != nil {
+			log.Printf("Failed to evaluate partition %s[%d] for group %s: %v",
+				tpo.Topic, tpo.Partition, groupID, err)
+			continue
+		}
+
+		partitionStatuses = append(partitionStatuses, partitionStatus)
+		totalLag += partitionStatus.CurrentLag
+
+		// Count partition states
+		switch partitionStatus.Status {
+		case StatusActive, StatusEmpty:
+			groupStatus.ActivePartitions++
+		case StatusStopped:
+			groupStatus.StoppedPartitions++
+		case StatusStalled:
+			groupStatus.StalledPartitions++
+		}
+
+		// Group partitions by health
+		switch partitionStatus.Health {
+		case HealthCritical:
+			groupStatus.CriticalPartitions = append(groupStatus.CriticalPartitions, partitionStatus)
+		case HealthWarning:
+			groupStatus.WarningPartitions = append(groupStatus.WarningPartitions, partitionStatus)
+		case HealthGood:
+			groupStatus.HealthyPartitions = append(groupStatus.HealthyPartitions, partitionStatus)
+		}
+	}
+
+	groupStatus.TotalLag = totalLag
+
+	// Determine overall health
+	if len(groupStatus.CriticalPartitions) > 0 {
+		groupStatus.OverallHealth = HealthCritical
+	} else if len(groupStatus.WarningPartitions) > 0 {
+		groupStatus.OverallHealth = HealthWarning
+	} else {
+		groupStatus.OverallHealth = HealthGood
+	}
+
+	return groupStatus, nil
+}
+
+// evaluatePartition evaluates a single partition for a consumer group
+func (c *Collector) evaluatePartition(ctx context.Context, groupID string, tpo kafkaclient.TopicPartitionOffset) (PartitionConsumerStatus, error) {
+
+	highWatermark, err := c.client.GetHighWatermark(tpo.Topic, tpo.Partition)
+	if err != nil {
+		return PartitionConsumerStatus{}, err
+	}
+
+	// Skip if no committed offset
+	if tpo.Offset == kafka.OffsetInvalid {
+		return PartitionConsumerStatus{
+			GroupID:       groupID,
+			Topic:         tpo.Topic,
+			Partition:     tpo.Partition,
+			Status:        StatusUnknown,
+			Health:        HealthWarning,
+			Message:       "No committed offset",
+			HighWatermark: highWatermark,
+		}, nil
+	}
+
+	// Calculate lag
+	lag := highWatermark - int64(tpo.Offset)
+	if lag < 0 {
+		lag = 0
+	}
+
+	// Create offset record
+	record := OffsetRecord{
+		Offset:         int64(tpo.Offset),
+		HighWatermark:  highWatermark,
+		Lag:            lag,
+		CheckTimestamp: time.Now(),
+	}
+
+	windowKey := fmt.Sprintf("%s:%s:%d", groupID, tpo.Topic, tpo.Partition)
+	c.addToWindow(windowKey, record)
+
+	records := c.getWindowRecords(windowKey)
+	status := c.evaluator.EvaluatePartitionConsumer(records, groupID, tpo.Topic, tpo.Partition)
+	c.updatePartitionMetrics(status)
+
+	return status, nil
 }
 
 // addToWindow adds a record to the sliding window
 func (c *Collector) addToWindow(key string, record OffsetRecord) {
 	c.windowsMu.Lock()
-	defer c.windowsMu.Unlock()
-
 	window, exists := c.windows[key]
 	if !exists {
 		window = &PartitionWindow{
@@ -259,6 +365,7 @@ func (c *Collector) addToWindow(key string, record OffsetRecord) {
 		}
 		c.windows[key] = window
 	}
+	c.windowsMu.Unlock()
 
 	window.mu.Lock()
 	defer window.mu.Unlock()
@@ -269,124 +376,96 @@ func (c *Collector) addToWindow(key string, record OffsetRecord) {
 	}
 }
 
-// evaluatePartition evaluates the status of a partition based on its window
-func (c *Collector) evaluatePartition(windowKey, groupID, topic string, partition int32) PartitionStatus {
+// getWindowRecords returns a copy of window records
+func (c *Collector) getWindowRecords(key string) []OffsetRecord {
 	c.windowsMu.RLock()
-	window, exists := c.windows[windowKey]
+	window, exists := c.windows[key]
 	c.windowsMu.RUnlock()
 
 	if !exists || window == nil {
-		return PartitionStatus{
-			GroupID:   groupID,
-			Topic:     topic,
-			Partition: partition,
-			Status:    StatusUnknown,
-			Message:   "No data available",
-		}
+		return nil
 	}
 
 	window.mu.RLock()
+	defer window.mu.RUnlock()
+
 	records := make([]OffsetRecord, len(window.Records))
 	copy(records, window.Records)
-	window.mu.RUnlock()
-
-	return c.evaluator.EvaluatePartition(records, groupID, topic, partition)
+	return records
 }
 
-// determineGroupStatus determines the overall status of a consumer group
-func (c *Collector) determineGroupStatus(groupID string, partitions []PartitionStatus, totalLag int64) GroupStatus {
-	status := GroupStatus{
-		GroupID:        groupID,
-		TotalLag:       totalLag,
-		PartitionCount: len(partitions),
-	}
-
-	for _, p := range partitions {
-		switch p.Status {
-		case StatusError, StatusStopped, StatusStalled:
-			status.ErrorPartitions = append(status.ErrorPartitions, p)
-		case StatusWarning:
-			status.WarningPartitions = append(status.WarningPartitions, p)
-		}
-	}
-
-	// Determine overall status
-	if len(status.ErrorPartitions) > 0 {
-		status.OverallStatus = StatusError
-	} else if len(status.WarningPartitions) > 0 {
-		status.OverallStatus = StatusWarning
-	} else {
-		status.OverallStatus = StatusOK
-	}
-
-	return status
+// updateMetrics updates Prometheus metrics
+func (c *Collector) updateMetrics(status GroupStatus) {
+	healthValue := healthToFloat(status.OverallHealth)
+	metrics.ConsumerGroupHealth.WithLabelValues(status.GroupID).Set(healthValue)
+	metrics.ConsumerGroupTotalLag.WithLabelValues(status.GroupID).Set(float64(status.TotalLag))
+	metrics.ConsumerGroupActivePartitions.WithLabelValues(status.GroupID).Set(float64(status.ActivePartitions))
+	metrics.ConsumerGroupStoppedPartitions.WithLabelValues(status.GroupID).Set(float64(status.StoppedPartitions))
+	metrics.ConsumerGroupStalledPartitions.WithLabelValues(status.GroupID).Set(float64(status.StalledPartitions))
 }
 
-// updateStatusMetrics updates Prometheus metrics based on group status
-func (c *Collector) updateStatusMetrics(status GroupStatus) {
-	statusValue := 0.0
-	switch status.OverallStatus {
-	case StatusWarning:
-		statusValue = 1.0
-	case StatusError, StatusStopped, StatusStalled:
-		statusValue = 2.0
+// updatePartitionMetrics updates partition-level metrics
+func (c *Collector) updatePartitionMetrics(status PartitionConsumerStatus) {
+	partitionStr := strconv.Itoa(int(status.Partition))
+	labels := []string{status.GroupID, status.Topic, partitionStr}
+
+	metrics.ConsumerCurrentOffset.WithLabelValues(labels...).Set(float64(status.CurrentOffset))
+	metrics.ConsumerLag.WithLabelValues(labels...).Set(float64(status.CurrentLag))
+	metrics.LogEndOffset.WithLabelValues(status.Topic, partitionStr).Set(float64(status.HighWatermark))
+
+	metrics.ConsumerStatus.WithLabelValues(labels...).Set(statusToFloat(status.Status))
+	metrics.ConsumerLagTrend.WithLabelValues(labels...).Set(trendToFloat(status.LagTrend))
+	metrics.ConsumerHealth.WithLabelValues(labels...).Set(healthToFloat(status.Health))
+
+	metrics.ConsumerConsumptionRate.WithLabelValues(labels...).Set(status.ConsumptionRate)
+	metrics.ConsumerLagChangeRate.WithLabelValues(labels...).Set(status.LagChangeRate)
+	metrics.ConsumerTimeSinceLastActivity.WithLabelValues(labels...).Set(status.TimeSinceLastMove.Seconds())
+
+	if status.IsActive {
+		metrics.ConsumerLastActivityTimestamp.WithLabelValues(labels...).Set(float64(status.LastUpdateTime.Unix()))
 	}
-
-	metrics.ConsumerGroupStatus.WithLabelValues(status.GroupID).Set(statusValue)
-	metrics.ConsumerGroupErrorPartitions.WithLabelValues(status.GroupID).Set(float64(len(status.ErrorPartitions)))
-	metrics.ConsumerGroupWarningPartitions.WithLabelValues(status.GroupID).Set(float64(len(status.WarningPartitions)))
 }
 
-// updatePartitionMetrics updates metrics for individual partitions
-func (c *Collector) updatePartitionMetrics(partitionStatus PartitionStatus) {
-	partitionStr := strconv.Itoa(int(partitionStatus.Partition))
-
-	statusValue := statusToFloat(string(partitionStatus.Status))
-	metrics.ConsumerPartitionStatus.WithLabelValues(
-		partitionStatus.GroupID,
-		partitionStatus.Topic,
-		partitionStr,
-	).Set(statusValue)
-
-	trendValue := lagTrendToFloat(partitionStatus.LagTrend)
-	metrics.ConsumerPartitionLagTrend.WithLabelValues(
-		partitionStatus.GroupID,
-		partitionStatus.Topic,
-		partitionStr,
-	).Set(trendValue)
-}
-
-func statusToFloat(status string) float64 {
+func statusToFloat(status ConsumerStatus) float64 {
 	switch status {
-	case "OK":
+	case StatusActive:
 		return 0
-	case "WARNING":
+	case StatusLagging:
 		return 1
-	case "ERROR":
+	case StatusStalled:
 		return 2
-	case "STOPPED":
+	case StatusStopped:
 		return 3
-	case "STALLED":
+	case StatusEmpty:
 		return 4
 	default:
 		return -1
 	}
 }
 
-func lagTrendToFloat(trend string) float64 {
+func trendToFloat(trend LagTrend) float64 {
 	switch trend {
-	case "unknown":
-		return 0
-	case "stable":
+	case TrendStable:
 		return 1
-	case "increasing":
+	case TrendIncreasing:
 		return 2
-	case "decreasing":
+	case TrendDecreasing:
 		return 3
-	case "stopped", "stalled":
-		return 4
 	default:
 		return 0
+	}
+}
+
+func healthToFloat(health ConsumerHealth) float64 {
+	switch health {
+	case HealthGood:
+		return 0
+	case HealthWarning:
+		return 1
+	case HealthCritical:
+		return 2
+	default:
+		return -1
 	}
 }
 
@@ -411,14 +490,13 @@ func (c *Collector) GetAllGroupStatuses() map[string]GroupStatus {
 }
 
 // StartPeriodicCollection starts periodic metric collection
-func (c *Collector) StartPeriodicCollection(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
+func (c *Collector) StartPeriodicCollection(ctx context.Context) {
+	ticker := time.NewTicker(c.config.CheckInterval)
 	defer ticker.Stop()
 
 	if err := c.CollectMetrics(ctx); err != nil {
 		log.Printf("Initial collection error: %v", err)
 	}
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -432,219 +510,15 @@ func (c *Collector) StartPeriodicCollection(ctx context.Context, interval time.D
 	}
 }
 
-// LagEvaluator evaluates consumer lag patterns
-type LagEvaluator struct {
-	config SlidingWindowConfig
-}
+// CleanupOldWindows removes windows for groups that no longer exist
+func (c *Collector) CleanupOldWindows(activeGroups map[string]bool) {
+	c.windowsMu.Lock()
+	defer c.windowsMu.Unlock()
 
-func NewLagEvaluator(config SlidingWindowConfig) *LagEvaluator {
-	return &LagEvaluator{config: config}
-}
-
-// EvaluatePartition evaluates the status of a partition based on its sliding window
-func (e *LagEvaluator) EvaluatePartition(records []OffsetRecord, groupID, topic string, partition int32) PartitionStatus {
-	if len(records) == 0 {
-		return PartitionStatus{
-			GroupID:   groupID,
-			Topic:     topic,
-			Partition: partition,
-			Status:    StatusUnknown,
-			Message:   "No data available",
+	for key := range c.windows {
+		groupID := key[:strings.Index(key, ":")]
+		if !activeGroups[groupID] {
+			delete(c.windows, key)
 		}
 	}
-
-	windowCompleteness := float64(len(records)) / float64(e.config.WindowSize) * 100
-	latest := records[len(records)-1]
-
-	// Not enough data for evaluation
-	if len(records) < e.config.MinWindowSize {
-		return PartitionStatus{
-			GroupID:            groupID,
-			Topic:              topic,
-			Partition:          partition,
-			Status:             StatusUnknown,
-			CurrentLag:         latest.Lag,
-			LagTrend:           "unknown",
-			Message:            fmt.Sprintf("Insufficient data: %d/%d records", len(records), e.config.WindowSize),
-			WindowCompleteness: windowCompleteness,
-			LastOffset:         latest.Offset,
-			LastCheckTime:      latest.CheckTimestamp,
-		}
-	}
-
-	// Check if consumer is stopped
-	if e.isConsumerStopped(records) {
-		return PartitionStatus{
-			GroupID:            groupID,
-			Topic:              topic,
-			Partition:          partition,
-			Status:             StatusStopped,
-			CurrentLag:         latest.Lag,
-			LagTrend:           "stopped",
-			Message:            "Consumer has stopped processing messages",
-			WindowCompleteness: windowCompleteness,
-			LastOffset:         latest.Offset,
-			LastCheckTime:      latest.CheckTimestamp,
-		}
-	}
-
-	// Check if consumer is stalled
-	if e.isConsumerStalled(records) {
-		return PartitionStatus{
-			GroupID:            groupID,
-			Topic:              topic,
-			Partition:          partition,
-			Status:             StatusStalled,
-			CurrentLag:         latest.Lag,
-			LagTrend:           "stalled",
-			Message:            "Consumer is not making progress",
-			WindowCompleteness: windowCompleteness,
-			LastOffset:         latest.Offset,
-			LastCheckTime:      latest.CheckTimestamp,
-		}
-	}
-
-	// Check if consumer caught up - lag was 0
-	if e.hasZeroLag(records) {
-		return PartitionStatus{
-			GroupID:            groupID,
-			Topic:              topic,
-			Partition:          partition,
-			Status:             StatusOK,
-			CurrentLag:         latest.Lag,
-			LagTrend:           e.getLagTrend(records),
-			Message:            "Consumer caught up during window",
-			WindowCompleteness: windowCompleteness,
-			LastOffset:         latest.Offset,
-			LastCheckTime:      latest.CheckTimestamp,
-		}
-	}
-
-	// Analyze lag trend
-	lagTrend := e.getLagTrend(records)
-	var status ConsumerStatus
-	var message string
-
-	switch lagTrend {
-	case "decreasing":
-		status = StatusOK
-		message = "Consumer is catching up"
-	case "increasing":
-		if e.isConsistentlyIncreasing(records) {
-			status = StatusWarning
-			message = "Lag is consistently increasing"
-		} else {
-			status = StatusOK
-			message = "Lag is increasing but consumer is making progress"
-		}
-	default:
-		status = StatusOK
-		message = "Lag is stable"
-	}
-
-	return PartitionStatus{
-		GroupID:            groupID,
-		Topic:              topic,
-		Partition:          partition,
-		Status:             status,
-		CurrentLag:         latest.Lag,
-		LagTrend:           lagTrend,
-		Message:            message,
-		WindowCompleteness: windowCompleteness,
-		LastOffset:         latest.Offset,
-		LastCheckTime:      latest.CheckTimestamp,
-	}
-}
-
-// isConsumerStopped checks if the consumer has stopped processing
-func (e *LagEvaluator) isConsumerStopped(records []OffsetRecord) bool {
-	if len(records) < 2 {
-		return false
-	}
-
-	uniqueOffsets := make(map[int64]bool)
-	for _, r := range records {
-		uniqueOffsets[r.Offset] = true
-	}
-
-	// If all offsets are the same and there's lag, consumer is stopped
-	if len(uniqueOffsets) == 1 && records[len(records)-1].Lag > 0 {
-		return true
-	}
-
-	// Check recent half records - TODO: Make this configurable?
-	halfWindow := len(records) / 2
-	recentRecords := records[halfWindow:]
-	recentUniqueOffsets := make(map[int64]bool)
-	for _, r := range recentRecords {
-		recentUniqueOffsets[r.Offset] = true
-	}
-
-	return len(recentUniqueOffsets) == 1 && records[len(records)-1].Lag > 0
-}
-
-// isConsumerStalled checks if the consumer is stalled
-func (e *LagEvaluator) isConsumerStalled(records []OffsetRecord) bool {
-	if len(records) < 3 {
-		return false
-	}
-
-	uniqueOffsets := make(map[int64]bool)
-	for _, r := range records {
-		uniqueOffsets[r.Offset] = true
-	}
-
-	uniqueRatio := float64(len(uniqueOffsets)) / float64(len(records))
-
-	return uniqueRatio <= e.config.StalledThreshold && records[len(records)-1].Lag > 0
-}
-
-func (e *LagEvaluator) hasZeroLag(records []OffsetRecord) bool {
-	for _, r := range records {
-		if r.Lag == 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func (e *LagEvaluator) getLagTrend(records []OffsetRecord) string {
-	if len(records) < 2 {
-		return "unknown"
-	}
-
-	startLag := records[0].Lag
-	endLag := records[len(records)-1].Lag
-
-	hasDecrease := false
-	for i := 1; i < len(records); i++ {
-		if records[i].Lag < records[i-1].Lag {
-			hasDecrease = true
-			break
-		}
-	}
-
-	if hasDecrease {
-		return "decreasing"
-	} else if float64(endLag) > float64(startLag)*1.1 { // TODO: Make this configurable?
-		return "increasing"
-	}
-	return "stable"
-}
-
-// isConsistentlyIncreasing checks if lag is consistently increasing
-func (e *LagEvaluator) isConsistentlyIncreasing(records []OffsetRecord) bool {
-	if len(records) < 3 {
-		return false
-	}
-
-	increases := 0
-	for i := 1; i < len(records); i++ {
-		if records[i].Lag > records[i-1].Lag {
-			increases++
-		}
-	}
-
-	// TODO: Make this configurable? - 70% of the time lag is increasing as default.
-	return float64(increases) > float64(len(records)-1)*0.7
 }
