@@ -5,6 +5,8 @@ reliability, extensibility, and professional SRE workflows.
 
 > *Monitor Kafka consumer lag like a radar. Spot anomalies, trigger alerts, and gain insight into the health of your streaming data pipelines.*
 
+🚧 This project is an MVP and actively evolving. Some features are still WIP and there may be flaky behavior—please use with caution and report any issues you find.
+
 ---
 
 ## Features
