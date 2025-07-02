@@ -121,6 +121,7 @@ func startHTTPServer(config *Config, c *collector.Collector) *http.Server {
 
 	// Health check endpoint
 	mux.HandleFunc("/health", api.HealthHandler)
+	mux.HandleFunc("/ready", api.ReadyHandler(c))
 
 	// API endpoints
 	mux.HandleFunc("/api/v1/status", api.StatusHandler(c))

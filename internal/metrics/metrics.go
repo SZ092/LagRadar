@@ -173,7 +173,7 @@ var (
 	)
 )
 
-// 监控系统自身的性能指标
+// TODO: Implement monitoring stack for LagRadar
 var (
 	CollectionDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{

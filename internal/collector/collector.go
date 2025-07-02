@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -129,6 +130,7 @@ type Collector struct {
 	evaluator     *LagEvaluator
 	statusStore   map[string]GroupStatus // Store latest group status
 	statusStoreMu sync.RWMutex
+	hasCollected  atomic.Bool
 }
 
 // NewWithConfig creates a new collector with custom configuration - For test
@@ -235,6 +237,7 @@ func (c *Collector) CollectMetrics(ctx context.Context) error {
 		c.statusStoreMu.Unlock()
 
 		c.updateMetrics(result.status)
+		c.hasCollected.Store(true)
 	}
 
 	return nil
@@ -508,6 +511,11 @@ func (c *Collector) StartPeriodicCollection(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// IsReady expose if LagRadar has collected metric data at least once
+func (c *Collector) IsReady() bool {
+	return c.hasCollected.Load()
 }
 
 // CleanupOldWindows removes windows for groups that no longer exist

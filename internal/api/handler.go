@@ -7,9 +7,23 @@ import (
 	"net/http"
 )
 
+// HealthHandler Get /api/v1/health
 func HealthHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintln(w, "OK")
+}
+
+// ReadyHandler Get /api/v1/ready
+func ReadyHandler(c *collector.Collector) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !c.IsReady() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprintln(w, "NOT_READY")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, "READY")
+	}
 }
 
 // GroupsHandler GET /api/v1/groups
