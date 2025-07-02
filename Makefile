@@ -14,7 +14,7 @@ LDFLAGS := -ldflags "-X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME} 
 # Directories
 BUILD_DIR := ./build
 DIST_DIR := ./dist
-CMD_DIR := ./cmd/lagradar
+CMD_DIR := ./cmd
 
 # Default target
 .DEFAULT_GOAL := help
@@ -25,14 +25,8 @@ CMD_DIR := ./cmd/lagradar
 build:
 	@echo "Building ${APP_NAME}..."
 	@mkdir -p ${BUILD_DIR}
-	@go build ${LDFLAGS} -o ${BUILD_DIR}/${APP_NAME} ${CMD_DIR}/main.go
+	@go build ${LDFLAGS} -o ${BUILD_DIR}/${APP_NAME} ./cmd
 	@echo "Built ${BUILD_DIR}/${APP_NAME}"
-
-## run: Run the application locally
-.PHONY: run
-run: build
-	@echo "Running ${APP_NAME}..."
-	@${BUILD_DIR}/${APP_NAME}
 
 ## test: Run tests
 .PHONY: test
@@ -109,25 +103,6 @@ compose-rebuild:
 	@echo "Rebuilding services..."
 	@docker-compose up -d --build
 
-## install: Install the application
-.PHONY: install
-install: build
-	@echo "Installing ${APP_NAME}..."
-	@go install ${LDFLAGS} ${CMD_DIR}/main.go
-
-## uninstall: Uninstall the application
-.PHONY: uninstall
-uninstall:
-	@echo "Uninstalling ${APP_NAME}..."
-	@rm -f ${GOPATH}/bin/${APP_NAME}
-
-
-## bench: Run benchmarks
-.PHONY: bench
-bench:
-	@echo "Running benchmarks..."
-	@go test -bench=. -benchmem ./...
-
 ## verify: Verify project (test, lint, fmt)
 .PHONY: verify
 verify: deps fmt lint test
@@ -163,8 +138,6 @@ help:
 	@echo ""
 	@echo "🔨 Build & Run"
 	@echo "  make build          Build the application binary"
-	@echo "  make run            Run the application locally"
-	@echo "  make install        Install the application"
 	@echo "  make clean          Clean build artifacts"
 	@echo ""
 	@echo "🧪 Testing & Quality"
@@ -173,10 +146,11 @@ help:
 	@echo "  make fmt            Format code"
 	@echo ""
 	@echo "🚀 Docker Compose"
-	@echo "  make compose-up     Start all services"
-	@echo "  make compose-down   Stop all services"
-	@echo "  make compose-logs   View service logs"
-	@echo "  make compose-ps     List running services"
+	@echo "  make compose-up          Start all services"
+	@echo "  make compose-down        Stop all services"
+	@echo "  make compose-logs        View service logs"
+	@echo "  make compose-ps          List running services"
+	@echo "  make compose-restart     Restart all services"
 	@echo ""
 	@echo "🛠️  Development"
 	@echo "  make dev-deps       Install dev dependencies"
