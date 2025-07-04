@@ -171,31 +171,33 @@ func (c *Collector) Close() {
 	}
 }
 
-// CollectMetrics collects metrics and evaluates consumer status
-func (c *Collector) CollectMetrics(ctx context.Context) error {
+// CollectMetricsWithCluster CollectMetrics collects metrics and evaluates consumer status
+func (c *Collector) CollectMetricsWithCluster(ctx context.Context, clusterName string) error {
 	start := time.Now()
 	defer func() {
 		duration := time.Since(start).Seconds()
-		metrics.ScrapeDuration.Set(duration)
+		metrics.ScrapeDuration.WithLabelValues(clusterName).Set(duration)
 	}()
 
 	groupIDs, err := c.client.ListConsumerGroups(ctx)
 	if err != nil {
-		metrics.ScrapeErrors.Inc()
-		return fmt.Errorf("failed to list consumer groups: %w", err)
+		metrics.ScrapeErrors.WithLabelValues(clusterName).Inc()
+		return fmt.Errorf("[%s] Error: failed to list consumer groups: %v", clusterName, err)
 	}
 
-	log.Printf("Found %d consumer groups", len(groupIDs))
+	log.Printf("[%s] Found %d consumer groups", clusterName, len(groupIDs))
+
+	metrics.ActiveConsumerGroups.WithLabelValues(clusterName).Set(float64(len(groupIDs)))
 
 	memberCounts, err := c.client.GetConsumerGroupMembers(ctx, groupIDs)
 	if err != nil {
-		log.Printf("Warning: failed to get group members: %v", err)
+		log.Printf("[%s] Warning: failed to get group members: %v", clusterName, err)
 		memberCounts = make(map[string]int)
 	}
 
 	// Update member count metrics
 	for groupID, count := range memberCounts {
-		metrics.ConsumerGroupMembers.WithLabelValues(groupID).Set(float64(count))
+		metrics.ConsumerGroupMembers.WithLabelValues(clusterName, groupID).Set(float64(count))
 	}
 
 	sem := make(chan struct{}, c.config.MaxConcurrency)
@@ -210,7 +212,10 @@ func (c *Collector) CollectMetrics(ctx context.Context) error {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			groupStatus, err := c.collectGroupMetrics(ctx, gid, memberCounts[gid])
+			// Measure collection duration per group
+			start := time.Now()
+			groupStatus, err := c.collectGroupMetricsWithCluster(ctx, gid, memberCounts[gid], clusterName)
+			metrics.CollectionDuration.WithLabelValues(clusterName, gid).Observe(time.Since(start).Seconds())
 			results <- groupResult{
 				groupID: gid,
 				status:  groupStatus,
@@ -227,8 +232,8 @@ func (c *Collector) CollectMetrics(ctx context.Context) error {
 
 	for result := range results {
 		if result.err != nil {
-			log.Printf("Error collecting metrics for group %s: %v", result.groupID, result.err)
-			metrics.ScrapeErrors.Inc()
+			log.Printf("[%s] Error collecting metrics for group %s: %v", clusterName, result.groupID, result.err)
+			metrics.ScrapeErrors.WithLabelValues(clusterName).Inc()
 			continue
 		}
 
@@ -236,7 +241,7 @@ func (c *Collector) CollectMetrics(ctx context.Context) error {
 		c.statusStore[result.groupID] = result.status
 		c.statusStoreMu.Unlock()
 
-		c.updateMetrics(result.status)
+		c.updateMetricsWithCluster(result.status, clusterName)
 		c.hasCollected.Store(true)
 	}
 
@@ -250,10 +255,12 @@ type groupResult struct {
 }
 
 // collectGroupMetrics collects and evaluates metrics for a single consumer group
-func (c *Collector) collectGroupMetrics(ctx context.Context, groupID string, memberCount int) (GroupStatus, error) {
+func (c *Collector) collectGroupMetricsWithCluster(ctx context.Context, groupID string,
+	memberCount int, clusterName string) (GroupStatus, error) {
 	offsets, err := c.client.GetConsumerGroupOffsets(ctx, groupID)
 	if err != nil {
-		return GroupStatus{}, fmt.Errorf("failed to get group offsets: %w", err)
+		return GroupStatus{}, fmt.Errorf("[%s] Error : failed to get group offsets: %w", clusterName, err)
+
 	}
 
 	groupStatus := GroupStatus{
@@ -264,17 +271,15 @@ func (c *Collector) collectGroupMetrics(ctx context.Context, groupID string, mem
 	}
 
 	var totalLag int64
-	partitionStatuses := make([]PartitionConsumerStatus, 0, len(offsets))
 
 	for _, tpo := range offsets {
-		partitionStatus, err := c.evaluatePartition(ctx, groupID, tpo)
+		partitionStatus, err := c.evaluatePartition(ctx, groupID, tpo, clusterName)
 		if err != nil {
-			log.Printf("Failed to evaluate partition %s[%d] for group %s: %v",
+			log.Printf("[%s] Error: Failed to evaluate partition %s[%d] for group %s: %v", clusterName,
 				tpo.Topic, tpo.Partition, groupID, err)
 			continue
 		}
 
-		partitionStatuses = append(partitionStatuses, partitionStatus)
 		totalLag += partitionStatus.CurrentLag
 
 		// Count partition states
@@ -313,7 +318,8 @@ func (c *Collector) collectGroupMetrics(ctx context.Context, groupID string, mem
 }
 
 // evaluatePartition evaluates a single partition for a consumer group
-func (c *Collector) evaluatePartition(ctx context.Context, groupID string, tpo kafkaclient.TopicPartitionOffset) (PartitionConsumerStatus, error) {
+func (c *Collector) evaluatePartition(ctx context.Context, groupID string, tpo kafkaclient.TopicPartitionOffset,
+	clusterName string) (PartitionConsumerStatus, error) {
 
 	highWatermark, err := c.client.GetHighWatermark(tpo.Topic, tpo.Partition)
 	if err != nil {
@@ -352,7 +358,7 @@ func (c *Collector) evaluatePartition(ctx context.Context, groupID string, tpo k
 
 	records := c.getWindowRecords(windowKey)
 	status := c.evaluator.EvaluatePartitionConsumer(records, groupID, tpo.Topic, tpo.Partition)
-	c.updatePartitionMetrics(status)
+	c.updatePartitionMetricsWithCluster(status, clusterName)
 
 	return status, nil
 }
@@ -397,24 +403,24 @@ func (c *Collector) getWindowRecords(key string) []OffsetRecord {
 	return records
 }
 
-// updateMetrics updates Prometheus metrics
-func (c *Collector) updateMetrics(status GroupStatus) {
+// updateMetricsWithCluster updates Prometheus metrics with cluster label
+func (c *Collector) updateMetricsWithCluster(status GroupStatus, clusterName string) {
 	healthValue := healthToFloat(status.OverallHealth)
-	metrics.ConsumerGroupHealth.WithLabelValues(status.GroupID).Set(healthValue)
-	metrics.ConsumerGroupTotalLag.WithLabelValues(status.GroupID).Set(float64(status.TotalLag))
-	metrics.ConsumerGroupActivePartitions.WithLabelValues(status.GroupID).Set(float64(status.ActivePartitions))
-	metrics.ConsumerGroupStoppedPartitions.WithLabelValues(status.GroupID).Set(float64(status.StoppedPartitions))
-	metrics.ConsumerGroupStalledPartitions.WithLabelValues(status.GroupID).Set(float64(status.StalledPartitions))
+	metrics.ConsumerGroupHealth.WithLabelValues(clusterName, status.GroupID).Set(healthValue)
+	metrics.ConsumerGroupTotalLag.WithLabelValues(clusterName, status.GroupID).Set(float64(status.TotalLag))
+	metrics.ConsumerGroupActivePartitions.WithLabelValues(clusterName, status.GroupID).Set(float64(status.ActivePartitions))
+	metrics.ConsumerGroupStoppedPartitions.WithLabelValues(clusterName, status.GroupID).Set(float64(status.StoppedPartitions))
+	metrics.ConsumerGroupStalledPartitions.WithLabelValues(clusterName, status.GroupID).Set(float64(status.StalledPartitions))
 }
 
 // updatePartitionMetrics updates partition-level metrics
-func (c *Collector) updatePartitionMetrics(status PartitionConsumerStatus) {
+func (c *Collector) updatePartitionMetricsWithCluster(status PartitionConsumerStatus, clusterName string) {
 	partitionStr := strconv.Itoa(int(status.Partition))
-	labels := []string{status.GroupID, status.Topic, partitionStr}
+	labels := []string{clusterName, status.GroupID, status.Topic, partitionStr}
 
 	metrics.ConsumerCurrentOffset.WithLabelValues(labels...).Set(float64(status.CurrentOffset))
 	metrics.ConsumerLag.WithLabelValues(labels...).Set(float64(status.CurrentLag))
-	metrics.LogEndOffset.WithLabelValues(status.Topic, partitionStr).Set(float64(status.HighWatermark))
+	metrics.LogEndOffset.WithLabelValues(clusterName, status.Topic, partitionStr).Set(float64(status.HighWatermark))
 
 	metrics.ConsumerStatus.WithLabelValues(labels...).Set(statusToFloat(status.Status))
 	metrics.ConsumerLagTrend.WithLabelValues(labels...).Set(trendToFloat(status.LagTrend))
@@ -493,20 +499,28 @@ func (c *Collector) GetAllGroupStatuses() map[string]GroupStatus {
 }
 
 // StartPeriodicCollection starts periodic metric collection
-func (c *Collector) StartPeriodicCollection(ctx context.Context) {
+func (c *Collector) StartPeriodicCollection(ctx context.Context, clusterName string) {
 	ticker := time.NewTicker(c.config.CheckInterval)
+	cleanupTicker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
+	defer cleanupTicker.Stop()
 
-	if err := c.CollectMetrics(ctx); err != nil {
+	if err := c.CollectMetricsWithCluster(ctx, clusterName); err != nil {
 		log.Printf("Initial collection error: %v", err)
 	}
 	for {
 		select {
+		case <-cleanupTicker.C:
+			activeGroups := make(map[string]bool)
+			for groupID := range c.GetAllGroupStatuses() {
+				activeGroups[groupID] = true
+			}
+			c.CleanupOldWindows(activeGroups)
 		case <-ctx.Done():
 			log.Println("Stopping periodic collection")
 			return
 		case <-ticker.C:
-			if err := c.CollectMetrics(ctx); err != nil {
+			if err := c.CollectMetricsWithCluster(ctx, clusterName); err != nil {
 				log.Printf("Collection error: %v", err)
 			}
 		}

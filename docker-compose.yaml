@@ -1,16 +1,19 @@
 services:
-  lagradar:
-    build: .
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
     ports:
-      - "8080:8080"
-    volumes:
-      - ./config.yaml:/app/config.yaml:ro
-    depends_on:
-      - kafka-1
-      - kafka-2
-      - kafka-3
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
     networks:
       - lagradar-network
+    healthcheck:
+      test: [ "CMD", "echo", "ruok", "|", "nc", "localhost", "2181" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   kafka-1:
     image: confluentinc/cp-kafka:7.6.0
@@ -29,6 +32,12 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     networks:
       - lagradar-network
+    healthcheck:
+      test: [ "CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:29092" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   kafka-2:
     image: confluentinc/cp-kafka:7.6.0
@@ -47,6 +56,12 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     networks:
       - lagradar-network
+    healthcheck:
+      test: [ "CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:29093" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   kafka-3:
     image: confluentinc/cp-kafka:7.6.0
@@ -65,16 +80,36 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     networks:
       - lagradar-network
+    healthcheck:
+      test: [ "CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:29094" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.6.0
+  lagradar:
+    build: .
     ports:
-      - "2181:2181"
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
+      - "8080:8080"
+    volumes:
+      - ./config.dev.yaml:/app/config.dev.yaml:ro
+    depends_on:
+      kafka-1:
+        condition: service_healthy
+      kafka-2:
+        condition: service_healthy
+      kafka-3:
+        condition: service_healthy
     networks:
       - lagradar-network
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka-1:29092,kafka-2:29093,kafka-3:29094
+    healthcheck:
+        test: [ "CMD", "curl", "-f", "http://localhost:8080/health" ]
+        interval: 10s
+        timeout: 5s
+        retries: 5
+        start_period: 30s
 
   prometheus:
     image: prom/prometheus:latest

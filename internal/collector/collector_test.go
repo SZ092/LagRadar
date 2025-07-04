@@ -106,19 +106,19 @@ func TestCollectMetrics_Success(t *testing.T) {
 	mockClient.On("GetHighWatermark", "test-topic-2", int32(0)).Return(int64(100), nil)
 	mockClient.On("GetHighWatermark", "test-topic-3", int32(0)).Return(int64(300), nil)
 
-	err := collector.CollectMetrics(ctx)
+	err := collector.CollectMetricsWithCluster(ctx, "default")
 	assert.NoError(t, err)
 	mockClient.AssertExpectations(t)
 
 	// Check lags
-	assert.Equal(t, float64(50), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("test-group-1", "test-topic-1", "0")))
-	assert.Equal(t, float64(50), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("test-group-1", "test-topic-1", "1")))
-	assert.Equal(t, float64(50), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("test-group-1", "test-topic-2", "0")))
-	assert.Equal(t, float64(60), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("test-group-2", "test-topic-1", "0")))
+	assert.Equal(t, float64(50), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("default", "test-group-1", "test-topic-1", "0")))
+	assert.Equal(t, float64(50), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("default", "test-group-1", "test-topic-1", "1")))
+	assert.Equal(t, float64(50), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("default", "test-group-1", "test-topic-2", "0")))
+	assert.Equal(t, float64(60), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("default", "test-group-2", "test-topic-1", "0")))
 
 	// Check member counts
-	assert.Equal(t, float64(3), testutil.ToFloat64(metrics.ConsumerGroupMembers.WithLabelValues("test-group-1")))
-	assert.Equal(t, float64(2), testutil.ToFloat64(metrics.ConsumerGroupMembers.WithLabelValues("test-group-2")))
+	assert.Equal(t, float64(3), testutil.ToFloat64(metrics.ConsumerGroupMembers.WithLabelValues("default", "test-group-1")))
+	assert.Equal(t, float64(2), testutil.ToFloat64(metrics.ConsumerGroupMembers.WithLabelValues("default", "test-group-2")))
 
 	// Check scrape duration was set
 	assert.Greater(t, testutil.ToFloat64(metrics.ScrapeDuration), float64(0))
@@ -126,7 +126,7 @@ func TestCollectMetrics_Success(t *testing.T) {
 
 // TestCollectMetrics_ListGroupsError tests error handling when listing groups fails
 func TestCollectMetrics_ListGroupsError(t *testing.T) {
-	initialErrors := testutil.ToFloat64(metrics.ScrapeErrors)
+	initialErrors := testutil.ToFloat64(metrics.ScrapeErrors.WithLabelValues("default"))
 
 	mockClient := new(MockKafkaClient)
 	collector := newTestCollectorWithConfig(mockClient)
@@ -135,14 +135,14 @@ func TestCollectMetrics_ListGroupsError(t *testing.T) {
 
 	mockClient.On("ListConsumerGroups", ctx).Return([]string(nil), errors.New("kafka connection failed"))
 
-	err := collector.CollectMetrics(ctx)
+	err := collector.CollectMetricsWithCluster(ctx, "default")
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to list consumer groups")
 	mockClient.AssertExpectations(t)
 
 	// Verify error counter was incremented
-	currentErrors := testutil.ToFloat64(metrics.ScrapeErrors)
+	currentErrors := testutil.ToFloat64(metrics.ScrapeErrors.WithLabelValues("default"))
 	assert.Equal(t, initialErrors+1, currentErrors)
 }
 
@@ -173,12 +173,12 @@ func TestCollectMetrics_PartialGroupError(t *testing.T) {
 	// Bad group fails
 	mockClient.On("GetConsumerGroupOffsets", ctx, "bad-group").Return([]kafkaclient.TopicPartitionOffset(nil), errors.New("group not found"))
 
-	err := collector.CollectMetrics(ctx)
+	err := collector.CollectMetricsWithCluster(ctx, "default")
 	assert.NoError(t, err)
 	mockClient.AssertExpectations(t)
 
 	// Verify good group metrics were collected
-	assert.Equal(t, float64(50), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("good-group", "test-topic", "0")))
+	assert.Equal(t, float64(50), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("default", "good-group", "test-topic", "0")))
 
 	// Verify error counter was incremented for bad group
 	currentErrors := testutil.ToFloat64(metrics.ScrapeErrors)
@@ -210,15 +210,15 @@ func TestCollectMetrics_HighWatermarkError(t *testing.T) {
 	mockClient.On("GetHighWatermark", "test-topic", int32(0)).Return(int64(150), nil)
 	mockClient.On("GetHighWatermark", "test-topic", int32(1)).Return(int64(0), errors.New("partition not found"))
 
-	err := collector.CollectMetrics(ctx)
+	err := collector.CollectMetricsWithCluster(ctx, "default")
 	assert.NoError(t, err)
 	mockClient.AssertExpectations(t)
 
 	// Verify only successful partition has metrics
-	assert.Equal(t, float64(50), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("test-group", "test-topic", "0")))
+	assert.Equal(t, float64(50), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("default", "test-group", "test-topic", "0")))
 
 	// Verify that log end offset was only recorded for successful partition
-	assert.Equal(t, float64(150), testutil.ToFloat64(metrics.LogEndOffset.WithLabelValues("test-topic", "0")))
+	assert.Equal(t, float64(150), testutil.ToFloat64(metrics.LogEndOffset.WithLabelValues("default", "test-topic", "0")))
 }
 
 // TestCollectMetrics_InvalidOffset tests handling of invalid offsets
@@ -245,18 +245,18 @@ func TestCollectMetrics_InvalidOffset(t *testing.T) {
 	mockClient.On("GetHighWatermark", "test-topic", int32(0)).Return(int64(100), nil)
 	mockClient.On("GetHighWatermark", "test-topic", int32(1)).Return(int64(200), nil)
 
-	err := collector.CollectMetrics(ctx)
+	err := collector.CollectMetricsWithCluster(ctx, "default")
 	assert.NoError(t, err)
 	mockClient.AssertExpectations(t)
 
 	// Verify that valid offset has lag recorded
-	assert.Equal(t, float64(50), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("test-group", "test-topic", "1")))
-	assert.Equal(t, float64(150), testutil.ToFloat64(metrics.ConsumerCurrentOffset.WithLabelValues("test-group", "test-topic", "1")))
+	assert.Equal(t, float64(50), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("default", "test-group", "test-topic", "1")))
+	assert.Equal(t, float64(150), testutil.ToFloat64(metrics.ConsumerCurrentOffset.WithLabelValues("default", "test-group", "test-topic", "1")))
 
 	// Invalid offset should NOT have LogEndOffset set - should be 0
-	assert.Equal(t, float64(0), testutil.ToFloat64(metrics.LogEndOffset.WithLabelValues("test-topic", "0")))
+	assert.Equal(t, float64(0), testutil.ToFloat64(metrics.LogEndOffset.WithLabelValues("default", "test-topic", "0")))
 	// Valid offset should have LogEndOffset
-	assert.Equal(t, float64(200), testutil.ToFloat64(metrics.LogEndOffset.WithLabelValues("test-topic", "1")))
+	assert.Equal(t, float64(200), testutil.ToFloat64(metrics.LogEndOffset.WithLabelValues("default", "test-topic", "1")))
 
 }
 
@@ -275,7 +275,7 @@ func TestStartPeriodicCollection(t *testing.T) {
 	// Start periodic collection with 100 ms interval
 	done := make(chan bool)
 	go func() {
-		collector.StartPeriodicCollection(ctx)
+		collector.StartPeriodicCollection(ctx, "default")
 		done <- true
 	}()
 
@@ -320,11 +320,11 @@ func TestCollectMetrics_MultiGroupSamePartition(t *testing.T) {
 	mockClient.On("GetConsumerGroupOffsets", ctx, "groupB").Return(groupBOffsets, nil)
 	mockClient.On("GetHighWatermark", "topic1", int32(0)).Return(int64(150), nil).Twice()
 
-	err := collector.CollectMetrics(ctx)
+	err := collector.CollectMetricsWithCluster(ctx, "default")
 	assert.NoError(t, err)
 
-	assert.Equal(t, float64(50), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("groupA", "topic1", "0")))
-	assert.Equal(t, float64(70), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("groupB", "topic1", "0")))
+	assert.Equal(t, float64(50), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("default", "groupA", "topic1", "0")))
+	assert.Equal(t, float64(70), testutil.ToFloat64(metrics.ConsumerLag.WithLabelValues("default", "groupB", "topic1", "0")))
 }
 
 // Benchmark test
@@ -362,6 +362,6 @@ func BenchmarkCollectMetrics(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = collector.CollectMetrics(ctx)
+		_ = collector.CollectMetricsWithCluster(ctx, "default")
 	}
 }

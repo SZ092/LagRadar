@@ -11,7 +11,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy all source code
-COPY . .
+COPY ../.. .
 
 # Build the application with CGO enabled (required for confluent-kafka-go)
 RUN go build -tags musl -o lagradar ./cmd/main.go
@@ -28,7 +28,7 @@ WORKDIR /app
 COPY --from=builder /app/lagradar .
 
 # Copy config file
-COPY config.yaml .
+COPY config.dev.yaml .
 
 # Create non-root user
 RUN addgroup -g 1000 -S lagradar && \

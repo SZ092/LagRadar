@@ -75,7 +75,8 @@ update-deps:
 .PHONY: compose-up
 compose-up:
 	@echo "Starting services with docker-compose..."
-	@docker-compose up -d
+	@docker-compose build
+	@docker-compose up
 
 ## compose-down: Stop all services
 .PHONY: compose-down
@@ -95,7 +96,9 @@ compose-ps:
 
 ## compose-restart: Restart all services
 .PHONY: compose-restart
-compose-restart: compose-down compose-up
+compose-restart:
+	docker-compose down -v
+	docker-compose up
 
 ## compose-rebuild: Rebuild and restart services
 .PHONY: compose-rebuild
