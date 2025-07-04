@@ -96,7 +96,7 @@ Grafana will auto-load example dashboards from `grafana/provisioning/dashboards/
 
 #### 4. Custom configuration
 
-- Edit `config.yaml` for LagRadar Kafka connection and tuning.
+- Edit `config.dev.yaml` (recommended for local development/testing only) for LagRadar Kafka connection and tuning.
 - See `prometheus/prometheus.yml` for scrape configs.
 
 ### 5. View Prometheus metrics
@@ -105,28 +105,32 @@ Grafana will auto-load example dashboards from `grafana/provisioning/dashboards/
 - Add this endpoint as a scrape target in your Prometheus config.
 
 ### 6. Explore API endpoints
-- `GET /api/v1/groups` 
-  - List all monitored consumer group IDs
-- `GET /api/v1/status` 
-  - All group health status
-- `GET /api/v1/status/{group}` 
-  - Status for a specific group
-- `GET /api/v1/config` 
-  - Get current Config of Collector
----
 
-## Example API Usage
+This service exposes a set of HTTP/REST APIs for cluster monitoring, consumer group status, Prometheus scraping, and health checks. Both legacy single-cluster and modern multi-cluster use cases are supported.
 
-```sh
-# List group IDs for all active consumer groups that being monitored 
-curl -s http://localhost:8080/api/v1/groups
+#### Core Endpoints
 
-# Get status for all consumer groups
-curl -s http://localhost:8080/api/v1/status
+| Endpoint         | Description                           |
+| ---------------- | ------------------------------------- |
+| `/health`        | Health check (K8s liveness probe)     |
+| `/ready`         | Readiness check (K8s readiness probe) |
+| `/metrics`       | Prometheus metrics scrape endpoint    |
+| `/api/v1/config` | Show current Collector config         |
 
-# Get status for specific consumer group
-curl -s http://localhost:8080/api/v1/status/my-consumer-group
-```
+#### Cluster & Consumer Group APIs
+| Endpoint                                    | Description                                |
+| ------------------------------------------- | ------------------------------------------ |
+| `/api/v1/clusters`                          | List all monitored clusters                |
+| `/api/v1/clusters/{cluster}/status`         | Get status for all groups in the cluster   |
+| `/api/v1/clusters/{cluster}/groups`         | List all consumer groups in the cluster    |
+| `/api/v1/clusters/{cluster}/groups/{group}` | Get status for a specific group in cluster |
+
+#### Legacy Single-Cluster (Backward Compatibility)
+| Endpoint         | Description                             |
+| ---------------- | --------------------------------------- |
+| `/api/v1/groups` | List all monitored groups (legacy mode) |
+| `/api/v1/status` | Get aggregated status for all groups    |
+
 
 ---
 
