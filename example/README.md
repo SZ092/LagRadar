@@ -1,26 +1,20 @@
 # LagRadar Example Dashboards
 
-This directory documents example Grafana dashboards and visualizations built with LagRadar metrics.
-
+This directory documents sample Grafana dashboards and visualizations built with LagRadar metrics.
 
 ## Note
 
 The dashboards and screenshots in `legacy/` reflect previous versions of LagRadar and are **not fully compatible** with current or upcoming releases.
 
-> LagRadar is under active development. Core features like **multi-cluster monitoring** and **multi-consumer-group support** are being redesigned. The dashboards here are kept as references for legacy use cases and for historical comparison.
-
+> LagRadar is a personal engineering project for technical demonstration and is not maintained as a community or production OSS.  
+> Dashboards here are provided as references for local demo and historical comparison only.
 
 ## Current Status
 
-- The main collector engine is being refactored. For more details about the priorities, please refer to  [Roadmap](../README.md#roadmap)
+- The main collector engine is being refactored. For details, see the [Roadmap](../README.md#roadmap).
 - Example dashboards for the new architecture will be added once core features are stable.
-- **Contributions** of updated dashboards or Grafana configs for the new API are very welcome!
-
-## Contributing
-
-- If you have dashboards or visualization setups for recent LagRadar versions, please open a PR to `examples/` or start a discussion.
-- For legacy setups, see `legacy/` for panel layouts and example queries.
+- Community contributions and pull requests are **not accepted** at this time.
 
 ---
 
-_Questions or feedback? Open an issue or join the discussions!_
+_Questions or feedback regarding these dashboards? Please do not submit issues or PRs—this directory is for personal reference only._
