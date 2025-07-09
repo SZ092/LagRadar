@@ -60,7 +60,31 @@ type Config struct {
 
 func main() {
 
-	config, err := loadConfig("config.dev.yaml")
+	// Get config file from environment variable or default
+	configFile := os.Getenv("CONFIG_FILE")
+	if configFile == "" {
+
+		possibleFiles := []string{
+			"config.yaml",
+			"config.dev.yaml",
+			"config.prod.yaml",
+			"/app/config.yaml",
+			"/app/config.dev.yaml",
+		}
+
+		for _, file := range possibleFiles {
+			if _, err := os.Stat(file); err == nil {
+				configFile = file
+				break
+			}
+		}
+
+		if configFile == "" {
+			log.Fatalf("No config file found. Set CONFIG_FILE environment variable or place config.yaml in working directory")
+		}
+	}
+
+	config, err := loadConfig(configFile)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}

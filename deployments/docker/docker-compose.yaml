@@ -18,7 +18,8 @@ services:
   kafka-1:
     image: confluentinc/cp-kafka:7.6.0
     depends_on:
-      - zookeeper
+       zookeeper:
+          condition: service_healthy
     ports:
       - "9092:9092"
     environment:
@@ -42,7 +43,8 @@ services:
   kafka-2:
     image: confluentinc/cp-kafka:7.6.0
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
       - "9093:9093"
     environment:
@@ -66,7 +68,8 @@ services:
   kafka-3:
     image: confluentinc/cp-kafka:7.6.0
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
       - "9094:9094"
     environment:
@@ -88,11 +91,13 @@ services:
       start_period: 30s
 
   lagradar:
-    build: .
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile
     ports:
       - "8080:8080"
     volumes:
-      - ./config.dev.yaml:/app/config.dev.yaml:ro
+      - ../../configs/config.dev.yaml:/app/config.yaml:ro
     depends_on:
       kafka-1:
         condition: service_healthy
@@ -104,6 +109,7 @@ services:
       - lagradar-network
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka-1:29092,kafka-2:29093,kafka-3:29094
+      - CONFIG_FILE=/app/config.yaml
     healthcheck:
         test: [ "CMD", "curl", "-f", "http://localhost:8080/health" ]
         interval: 10s
@@ -116,7 +122,7 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -134,7 +140,7 @@ services:
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - grafana-data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
     networks:
