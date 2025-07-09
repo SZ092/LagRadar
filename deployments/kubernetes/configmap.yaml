@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lagradar-config
+  namespace: monitoring
+data:
+  config.yaml: |
+    collector:
+      window:
+        size: 20
+        min_size: 5
+      check_interval: "30s"
+      max_concurrency: 10
+      thresholds:
+        stalled_consumption_rate: 0.1
+        rapid_lag_increase_rate: 100.0
+        lag_trend_threshold: 0.1
+        inactivity_timeout: "5m"
+    
+    clusters:
+      - name: "prod-us-east-1"
+        enabled: true
+        brokers:
+          - kafka-prod-us-east-1-broker-0.kafka.svc.cluster.local:9092
+          - kafka-prod-us-east-1-broker-1.kafka.svc.cluster.local:9092
+          - kafka-prod-us-east-1-broker-2.kafka.svc.cluster.local:9092
+      
+      - name: "prod-us-west-2"
+        enabled: true
+        brokers:
+          - kafka-prod-us-west-2-broker-0.kafka.svc.cluster.local:9092
+          - kafka-prod-us-west-2-broker-1.kafka.svc.cluster.local:9092
+          - kafka-prod-us-west-2-broker-2.kafka.svc.cluster.local:9092
+      
+      - name: "prod-eu-central-1"
+        enabled: true
+        brokers:
+          - kafka-prod-eu-central-1-broker-0.kafka.svc.cluster.local:9092
+          - kafka-prod-eu-central-1-broker-1.kafka.svc.cluster.local:9092
+          - kafka-prod-eu-central-1-broker-2.kafka.svc.cluster.local:9092
+      
+      - name: "staging"
+        enabled: true
+        brokers:
+          - kafka-staging-broker-0.kafka-staging.svc.cluster.local:9092
+          - kafka-staging-broker-1.kafka-staging.svc.cluster.local:9092
+    
+    http:
+      address: :8080
+      metrics_path: /metrics
+    
+    server:
+      api:
+        enabled: true
+        address: "0.0.0.0:8080"
+        read_timeout: "30s"
+        write_timeout: "30s"
