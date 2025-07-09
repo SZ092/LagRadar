@@ -17,4 +17,4 @@ The dashboards and screenshots in `legacy/` reflect previous versions of LagRada
 
 ---
 
-_Questions or feedback regarding these dashboards? Please do not submit issues or PRs—this directory is for personal reference only._
+Questions or feedback: contact: zhegithubcontact [at] gmail.com
