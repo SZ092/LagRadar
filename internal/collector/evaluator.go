@@ -290,3 +290,8 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// GetConfig returns the evaluator configuration
+func (e *LagEvaluator) GetConfig() Config {
+	return e.config
+}
