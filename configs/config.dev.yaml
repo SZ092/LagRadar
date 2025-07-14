@@ -28,3 +28,13 @@ server:
     address: "0.0.0.0:8080"
     read_timeout: "30s"
     write_timeout: "30s"
+
+rca:
+  enabled: true
+  redis_addr: "redis:6379" 
+  redis_password: ""
+  redis_db: 0
+  stream_key: "lagradar:rca:events"
+  max_retries: 3
+  retry_interval: "1s"
+  de_dupe_window: "5m"

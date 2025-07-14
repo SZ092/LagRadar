@@ -4,6 +4,7 @@ import (
 	"LagRadar/internal/api"
 	"LagRadar/internal/cluster"
 	"LagRadar/internal/collector"
+	"LagRadar/pkg/redis"
 	"context"
 	"fmt"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -56,6 +57,9 @@ type Config struct {
 			WriteTimeout string `yaml:"write_timeout"`
 		} `yaml:"api"`
 	} `yaml:"server"`
+
+	// RCA configuration
+	RCA redis.PublisherConfig `yaml:"rca"`
 }
 
 func main() {
@@ -92,6 +96,13 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Printf("Starting LagRadar...")
 
+	// Log RCA status
+	if config.RCA.Enabled {
+		log.Printf("RCA event publishing enabled (Redis: %s)", config.RCA.RedisAddr)
+	} else {
+		log.Printf("RCA event publishing disabled")
+	}
+
 	checkInterval, err := time.ParseDuration(config.Collector.CheckInterval)
 	if err != nil {
 		log.Fatalf("Invalid check interval: %v", err)
@@ -113,10 +124,16 @@ func main() {
 		MaxConcurrency:         config.Collector.MaxConcurrency,
 	}
 
-	// Create cluster manager
-	clusterManager := cluster.NewManager(globalCollectorConfig)
+	// Create cluster manager with RCA support
+	var clusterManager *cluster.Manager
+	if config.RCA.Enabled {
+		clusterManager = cluster.NewManagerWithRCA(globalCollectorConfig, config.RCA)
+	} else {
+		clusterManager = cluster.NewManager(globalCollectorConfig)
+	}
 	defer clusterManager.Stop()
 
+	// Add Clusters
 	if len(config.Clusters) > 0 {
 		log.Printf("Multi-cluster mode: adding %d clusters", len(config.Clusters))
 		for _, clusterConfig := range config.Clusters {

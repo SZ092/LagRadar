@@ -146,9 +146,25 @@ services:
     networks:
       - lagradar-network
 
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - lagradar-network
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
 volumes:
   prometheus-data:
   grafana-data:
+  redis-data:
 
 networks:
   lagradar-network:
