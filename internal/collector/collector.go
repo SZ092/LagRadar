@@ -123,14 +123,15 @@ type KafkaClient interface {
 
 // Collector is the main collector implementation
 type Collector struct {
-	client        KafkaClient
-	config        Config
-	windows       map[string]*PartitionWindow // key: "group:topic:partition"
-	windowsMu     sync.RWMutex
-	evaluator     *LagEvaluator
-	statusStore   map[string]GroupStatus // Store latest group status
-	statusStoreMu sync.RWMutex
-	hasCollected  atomic.Bool
+	client         KafkaClient
+	config         Config
+	windows        map[string]*PartitionWindow // key: "group:topic:partition"
+	windowsMu      sync.RWMutex
+	evaluator      *LagEvaluator
+	statusStore    map[string]GroupStatus // Store latest group status
+	statusStoreMu  sync.RWMutex
+	hasCollected   atomic.Bool
+	evaluationHook func(status PartitionConsumerStatus, records []OffsetRecord)
 }
 
 // NewWithConfig creates a new collector with custom configuration - For test
@@ -358,6 +359,12 @@ func (c *Collector) evaluatePartition(ctx context.Context, groupID string, tpo k
 
 	records := c.getWindowRecords(windowKey)
 	status := c.evaluator.EvaluatePartitionConsumer(records, groupID, tpo.Topic, tpo.Partition)
+
+	// Call RCA hook if set
+	if c.evaluationHook != nil {
+		c.evaluationHook(status, records)
+	}
+
 	c.updatePartitionMetricsWithCluster(status, clusterName)
 
 	return status, nil
@@ -543,4 +550,9 @@ func (c *Collector) CleanupOldWindows(activeGroups map[string]bool) {
 			delete(c.windows, key)
 		}
 	}
+}
+
+// SetEvaluationHook sets a hook that's called after each partition evaluation
+func (c *Collector) SetEvaluationHook(hook func(status PartitionConsumerStatus, records []OffsetRecord)) {
+	c.evaluationHook = hook
 }

@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"LagRadar/internal/collector"
+	"LagRadar/pkg/redis"
 	"context"
 	"fmt"
 	"log"
@@ -21,17 +22,21 @@ type Manager struct {
 	clusters     map[string]*CollectorCluster
 	clustersMu   sync.RWMutex
 	globalConfig collector.Config
+	rcaConfig    *redis.PublisherConfig
 	ctx          context.Context
 	cancel       context.CancelFunc
 }
 
-// CollectorCluster Collector ClusterCollector wraps a collector with cluster metadata
+// CollectorCluster wraps a collector with cluster metadata
 type CollectorCluster struct {
-	ClusterName string
-	Collector   *collector.Collector
-	Config      ConfigCluster
-	LastError   error
-	LastErrorMu sync.RWMutex
+	ClusterName  string
+	Collector    *collector.Collector
+	Config       ConfigCluster
+	LastError    error
+	LastErrorMu  sync.RWMutex
+	RCAPublisher *redis.EventPublisher   // RCA publisher for this cluster
+	Evaluator    *redis.EvaluatorWithRCA // RCA-aware evaluator
+	cancelFunc   context.CancelFunc      // Cancel function for this cluster
 }
 
 // NewManager creates a new cluster manager
@@ -42,6 +47,18 @@ func NewManager(globalConfig collector.Config) *Manager {
 		globalConfig: globalConfig,
 		ctx:          ctx,
 		cancel:       cancel,
+	}
+}
+
+// NewManagerWithRCA creates a new cluster manager with RCA support
+func NewManagerWithRCA(globalConfig collector.Config, rcaConfig redis.PublisherConfig) *Manager {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Manager{
+		clusters:     make(map[string]*CollectorCluster),
+		globalConfig: globalConfig,
+		ctx:          ctx,
+		cancel:       cancel,
+		rcaConfig:    &rcaConfig,
 	}
 }
 
@@ -66,26 +83,35 @@ func (m *Manager) AddCluster(config ConfigCluster) error {
 		collectorConfig = *config.Collector
 	}
 
-	// Create collector for this cluster
 	brokers := joinBrokers(config.Brokers)
-	coll, err := collector.NewWithConfig(brokers, collectorConfig)
+
+	// Create collector with optional RCA support
+	coll, rcaPublisher, err := createCollectorWithRCA(brokers, collectorConfig, m.rcaConfig, config.Name)
+
 	if err != nil {
 		return fmt.Errorf("failed to create collector for cluster %s: %w", config.Name, err)
 	}
 
+	// Create cluster context
+	clusterCtx, clusterCancel := context.WithCancel(m.ctx)
+
 	// Wrap in ClusterCollector
 	cc := &CollectorCluster{
-		ClusterName: config.Name,
-		Collector:   coll,
-		Config:      config,
+		ClusterName:  config.Name,
+		Collector:    coll,
+		Config:       config,
+		RCAPublisher: rcaPublisher,
+		cancelFunc:   clusterCancel,
 	}
 
 	m.clusters[config.Name] = cc
 
 	// Start periodic collection for this cluster
-	go m.startClusterCollection(cc)
+	go m.startClusterCollection(clusterCtx, cc)
 
-	log.Printf("Added cluster %s with %d brokers", config.Name, len(config.Brokers))
+	log.Printf("Added cluster %s with %d brokers (RCA: %v)",
+		config.Name, len(config.Brokers), rcaPublisher != nil)
+
 	return nil
 }
 
@@ -99,7 +125,17 @@ func (m *Manager) RemoveCluster(clusterName string) error {
 		return fmt.Errorf("cluster %s not found", clusterName)
 	}
 
+	// Cancel the cluster's context
+	if cc.cancelFunc != nil {
+		cc.cancelFunc()
+	}
+
 	cc.Collector.Close()
+
+	if cc.RCAPublisher != nil {
+		cc.RCAPublisher.Close()
+	}
+
 	delete(m.clusters, clusterName)
 
 	log.Printf("Removed cluster %s", clusterName)
@@ -185,8 +221,8 @@ func (m *Manager) GetGroupStatus(clusterName, groupID string) (GroupStatusCluste
 }
 
 // startClusterCollection starts periodic collection for a cluster
-func (m *Manager) startClusterCollection(cc *CollectorCluster) {
-	cc.Collector.StartPeriodicCollection(m.ctx, cc.ClusterName)
+func (m *Manager) startClusterCollection(ctx context.Context, cc *CollectorCluster) {
+	cc.Collector.StartPeriodicCollection(ctx, cc.ClusterName)
 }
 
 // Stop stops all cluster collectors
@@ -197,7 +233,13 @@ func (m *Manager) Stop() {
 	defer m.clustersMu.Unlock()
 
 	for _, cc := range m.clusters {
+		if cc.cancelFunc != nil {
+			cc.cancelFunc()
+		}
 		cc.Collector.Close()
+		if cc.RCAPublisher != nil {
+			cc.RCAPublisher.Close()
+		}
 	}
 
 	log.Println("Cluster manager stopped")
