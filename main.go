@@ -4,7 +4,7 @@ import (
 	"LagRadar/internal/api"
 	"LagRadar/internal/cluster"
 	"LagRadar/internal/collector"
-	"LagRadar/pkg/redis"
+	"LagRadar/internal/rca"
 	"context"
 	"fmt"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -59,7 +59,7 @@ type Config struct {
 	} `yaml:"server"`
 
 	// RCA configuration
-	RCA redis.PublisherConfig `yaml:"rca"`
+	RCA rca.PublisherConfig `yaml:"rca"`
 }
 
 func main() {

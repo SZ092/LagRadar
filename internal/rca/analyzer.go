@@ -1,4 +1,4 @@
-package redis
+package rca
 
 import (
 	"LagRadar/internal/collector"
