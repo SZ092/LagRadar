@@ -1,0 +1,23 @@
+name: Docker Build & Scan
+on:
+  push:
+    branches: [ main ]
+jobs:
+  docker-build-scan:
+    name: "Docker build & scan"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: make docker-build
+
+      - name: Save image to tar
+        run: docker save lagradar:latest -o lagradar.tar
+
+      - name: Run Trivy image scan
+        uses: aquasecurity/trivy-action@0.19.0
+        with:
+          input: lagradar.tar
+          exit-code: 1
+          ignore-unfixed: true
