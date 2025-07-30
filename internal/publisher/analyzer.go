@@ -1,7 +1,8 @@
-package rca
+package publisher
 
 import (
 	"LagRadar/internal/collector"
+	"LagRadar/internal/rca"
 	"context"
 	"fmt"
 	"log"
@@ -77,23 +78,23 @@ func (e *EvaluatorWithRCA) publishStatusChangeEvent(
 	previousStatus collector.ConsumerStatus,
 ) {
 	var eventType string
-	var severity EventSeverity
+	var severity rca.EventSeverity
 
 	switch status.Status {
 	case collector.StatusStopped:
 		if previousStatus == collector.StatusActive || previousStatus == collector.StatusLagging {
-			eventType = EventTypeConsumerStopped
-			severity = SeverityCritical
+			eventType = rca.EventTypeConsumerStopped
+			severity = rca.SeverityCritical
 		}
 	case collector.StatusStalled:
 		if previousStatus == collector.StatusActive {
-			eventType = EventTypeConsumerStalled
-			severity = SeverityWarning
+			eventType = rca.EventTypeConsumerStalled
+			severity = rca.SeverityWarning
 		}
 	case collector.StatusActive, collector.StatusEmpty:
 		if previousStatus == collector.StatusStopped || previousStatus == collector.StatusStalled {
-			eventType = EventTypeConsumerRecovered
-			severity = SeverityInfo
+			eventType = rca.EventTypeConsumerRecovered
+			severity = rca.SeverityInfo
 		}
 	}
 
@@ -123,8 +124,8 @@ func (e *EvaluatorWithRCA) detectCriticalConditions(
 
 		if err := e.rcaPublisher.PublishPartitionEvent(
 			ctx,
-			EventTypeRapidLagIncrease,
-			SeverityWarning,
+			rca.EventTypeRapidLagIncrease,
+			rca.SeverityWarning,
 			status,
 			message,
 		); err != nil {
@@ -140,8 +141,8 @@ func (e *EvaluatorWithRCA) detectCriticalConditions(
 
 		if err := e.rcaPublisher.PublishPartitionEvent(
 			ctx,
-			EventTypeLagCleared,
-			SeverityInfo,
+			rca.EventTypeLagCleared,
+			rca.SeverityInfo,
 			status,
 			message,
 		); err != nil {

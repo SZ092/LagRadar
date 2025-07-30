@@ -1,7 +1,8 @@
-package rca
+package publisher
 
 import (
 	"LagRadar/internal/collector"
+	"LagRadar/internal/rca"
 	"context"
 	"crypto/md5"
 	"encoding/json"
@@ -18,11 +19,11 @@ type EventPublisher struct {
 	source      string
 	streamKey   string
 	clusterName string
-	config      PublisherConfig
+	config      rca.Config
 }
 
-func NewEventPublisher(config PublisherConfig, clusterName string) (*EventPublisher, error) {
-	if !config.Enabled {
+func NewEventPublisher(config rca.Config, clusterName string) (*EventPublisher, error) {
+	if !config.Publisher.Enabled {
 		return &EventPublisher{
 			enabled: false,
 			config:  config,
@@ -30,9 +31,9 @@ func NewEventPublisher(config PublisherConfig, clusterName string) (*EventPublis
 	}
 
 	client := redis.NewClient(&redis.Options{
-		Addr:     config.RedisAddr,
-		Password: config.RedisPassword,
-		DB:       config.RedisDB,
+		Addr:     config.Redis.Addr,
+		Password: config.Redis.Password,
+		DB:       config.Redis.DB,
 	})
 
 	// Test connection
@@ -45,9 +46,9 @@ func NewEventPublisher(config PublisherConfig, clusterName string) (*EventPublis
 
 	return &EventPublisher{
 		client:      client,
-		enabled:     config.Enabled,
+		enabled:     config.Publisher.Enabled,
 		source:      "lagradar",
-		streamKey:   config.StreamKey,
+		streamKey:   config.Publisher.StreamKey,
 		clusterName: clusterName,
 		config:      config,
 	}, nil
@@ -62,7 +63,7 @@ func (p *EventPublisher) Close() {
 func (p *EventPublisher) PublishPartitionEvent(
 	ctx context.Context,
 	eventType string,
-	severity EventSeverity,
+	severity rca.EventSeverity,
 	status collector.PartitionConsumerStatus,
 	message string,
 ) error {
@@ -70,10 +71,10 @@ func (p *EventPublisher) PublishPartitionEvent(
 		return nil
 	}
 
-	event := KafkaLagEvent{
-		BaseEvent: BaseEvent{
+	event := rca.KafkaLagEvent{
+		BaseEvent: rca.BaseEvent{
 			ID:          generateEventID(),
-			Source:      SourceLagRadar,
+			Source:      rca.SourceLagRadar,
 			Type:        eventType,
 			Severity:    severity,
 			Timestamp:   time.Now(),
@@ -108,7 +109,7 @@ func (p *EventPublisher) PublishPartitionEvent(
 	}
 
 	dedupeKey := fmt.Sprintf("rca:dedup:%s", event.Fingerprint)
-	wasNew, err := p.client.SetNX(ctx, dedupeKey, "1", p.config.DeDupeWindow).Result()
+	wasNew, err := p.client.SetNX(ctx, dedupeKey, "1", p.config.Publisher.DeDupeWindow).Result()
 	if err != nil {
 		log.Printf("Dedup check failed: %v", err)
 	} else if !wasNew {
@@ -118,7 +119,7 @@ func (p *EventPublisher) PublishPartitionEvent(
 	}
 
 	var lastErr error
-	for i := 0; i < p.config.MaxRetries; i++ {
+	for i := 0; i < p.config.Publisher.MaxRetries; i++ {
 		_, err = p.client.XAdd(ctx, &redis.XAddArgs{
 			Stream: p.streamKey,
 			// Set to 100K for now
@@ -143,18 +144,18 @@ func (p *EventPublisher) PublishPartitionEvent(
 		}
 
 		lastErr = err
-		if i < p.config.MaxRetries-1 {
-			retryInterval, _ := time.ParseDuration(p.config.RetryInterval)
+		if i < p.config.Publisher.MaxRetries-1 {
+			retryInterval, _ := time.ParseDuration(p.config.Publisher.RetryInterval)
 			time.Sleep(retryInterval * time.Duration(i+1))
 		}
 	}
 
-	return fmt.Errorf("failed to publish event after %d retries: %w", p.config.MaxRetries, lastErr)
+	return fmt.Errorf("failed to publish event after %d retries: %w", p.config.Publisher.MaxRetries, lastErr)
 }
 
-func (p *EventPublisher) generateFingerprint(event KafkaLagEvent) string {
+func (p *EventPublisher) generateFingerprint(event rca.KafkaLagEvent) string {
 
-	timeWindow := event.Timestamp.Truncate(p.config.DeDupeWindow).Unix()
+	timeWindow := event.Timestamp.Truncate(p.config.Publisher.DeDupeWindow).Unix()
 	data := fmt.Sprintf("%s:%s:%s:%s:%d:%d",
 		event.Source,
 		event.Type,

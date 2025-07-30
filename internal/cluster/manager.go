@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"LagRadar/internal/collector"
+	"LagRadar/internal/publisher"
 	"LagRadar/internal/rca"
 	"context"
 	"fmt"
@@ -22,7 +23,7 @@ type Manager struct {
 	clusters     map[string]*CollectorCluster
 	clustersMu   sync.RWMutex
 	globalConfig collector.Config
-	rcaConfig    *rca.PublisherConfig
+	rcaConfig    *rca.Config
 	ctx          context.Context
 	cancel       context.CancelFunc
 }
@@ -34,9 +35,9 @@ type CollectorCluster struct {
 	Config       ConfigCluster
 	LastError    error
 	LastErrorMu  sync.RWMutex
-	RCAPublisher *rca.EventPublisher   // RCA publisher for this cluster
-	Evaluator    *rca.EvaluatorWithRCA // RCA-aware evaluator
-	cancelFunc   context.CancelFunc    // Cancel function for this cluster
+	RCAPublisher *publisher.EventPublisher   // RCA publisher for this cluster
+	Evaluator    *publisher.EvaluatorWithRCA // RCA-aware evaluator
+	cancelFunc   context.CancelFunc          // Cancel function for this cluster
 }
 
 // NewManager creates a new cluster manager
@@ -51,7 +52,7 @@ func NewManager(globalConfig collector.Config) *Manager {
 }
 
 // NewManagerWithRCA creates a new cluster manager with RCA support
-func NewManagerWithRCA(globalConfig collector.Config, rcaConfig rca.PublisherConfig) *Manager {
+func NewManagerWithRCA(globalConfig collector.Config, rcaConfig rca.Config) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Manager{
 		clusters:     make(map[string]*CollectorCluster),

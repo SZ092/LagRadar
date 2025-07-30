@@ -1,7 +1,8 @@
-package rca
+package publisher
 
 import (
 	"LagRadar/internal/collector"
+	"LagRadar/internal/rca"
 	"context"
 	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
@@ -17,12 +18,19 @@ func TestEventPublisher(t *testing.T) {
 		t.Skip("Redis is not available, skipping test")
 	}
 
-	config := PublisherConfig{
-		Enabled:       true,
-		RedisAddr:     redisAddr,
-		StreamKey:     "test:events",
-		MaxRetries:    3,
-		RetryInterval: "100ms",
+	config := rca.Config{
+		Publisher: rca.PublisherConfig{
+			Enabled:       true,
+			StreamKey:     "test:events",
+			MaxRetries:    3,
+			RetryInterval: "100ms",
+			DeDupeWindow:  5 * time.Minute,
+		},
+		Redis: rca.RedisConfig{
+			Addr:     redisAddr,
+			Password: "",
+			DB:       0,
+		},
 	}
 
 	publisher, err := NewEventPublisher(config, "test-cluster")
@@ -48,8 +56,8 @@ func TestEventPublisher(t *testing.T) {
 
 	err = publisher.PublishPartitionEvent(
 		context.Background(),
-		EventTypeConsumerStopped,
-		SeverityCritical,
+		rca.EventTypeConsumerStopped,
+		rca.SeverityCritical,
 		status,
 		"Test message",
 	)
@@ -57,13 +65,15 @@ func TestEventPublisher(t *testing.T) {
 
 	// Verify event was published
 	client := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
+		Addr:     config.Redis.Addr,
+		Password: config.Redis.Password,
+		DB:       config.Redis.DB,
 	})
 	defer client.Close()
 
 	// Read from stream
 	result, err := client.XRead(context.Background(), &redis.XReadArgs{
-		Streams: []string{config.StreamKey, "0"},
+		Streams: []string{config.Publisher.StreamKey, "0"},
 		Count:   1,
 		Block:   1 * time.Second,
 	}).Result()
@@ -75,11 +85,25 @@ func TestEventPublisher(t *testing.T) {
 	// Verify event content
 	eventData := result[0].Messages[0].Values["event"]
 	assert.NotNil(t, eventData)
+
+	// Verify event metadata
+	assert.Equal(t, "consumer_stopped", result[0].Messages[0].Values["type"])
+	assert.Equal(t, "critical", result[0].Messages[0].Values["severity"])
+	assert.Equal(t, "test-cluster", result[0].Messages[0].Values["cluster"])
+	assert.Equal(t, "test-group", result[0].Messages[0].Values["group_id"])
+	assert.Equal(t, "test-topic", result[0].Messages[0].Values["topic"])
+	assert.Equal(t, "0", result[0].Messages[0].Values["partition"])
+
 }
 
 func TestEventPublisherDisabled(t *testing.T) {
-	config := PublisherConfig{
-		Enabled: false,
+	config := rca.Config{
+		Publisher: rca.PublisherConfig{
+			Enabled: false,
+		},
+		Redis: rca.RedisConfig{
+			Addr: "localhost:6379",
+		},
 	}
 
 	publisher, err := NewEventPublisher(config, "test-cluster")
@@ -90,8 +114,8 @@ func TestEventPublisherDisabled(t *testing.T) {
 	// Should not error when publishing with disabled publisher
 	err = publisher.PublishPartitionEvent(
 		context.Background(),
-		EventTypeConsumerStopped,
-		SeverityCritical,
+		rca.EventTypeConsumerStopped,
+		rca.SeverityCritical,
 		collector.PartitionConsumerStatus{},
 		"Test",
 	)
@@ -99,9 +123,16 @@ func TestEventPublisherDisabled(t *testing.T) {
 }
 
 func TestEventPublisherConnectionFailure(t *testing.T) {
-	config := PublisherConfig{
-		Enabled:   true,
-		RedisAddr: "localhost:9999", // Invalid port
+	config := rca.Config{
+		Publisher: rca.PublisherConfig{
+			Enabled:   true,
+			StreamKey: "test:events",
+		},
+		Redis: rca.RedisConfig{
+			Addr:     "localhost:9999", // Invalid port
+			Password: "",
+			DB:       0,
+		},
 	}
 
 	publisher, err := NewEventPublisher(config, "test-cluster")

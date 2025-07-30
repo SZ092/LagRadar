@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"LagRadar/internal/collector"
+	"LagRadar/internal/publisher"
 	"LagRadar/internal/rca"
 	kafkaclient "LagRadar/pkg/kafka"
 	"fmt"
@@ -11,8 +12,8 @@ import (
 )
 
 // createCollectorWithRCA creates a collector with RCA support
-func createCollectorWithRCA(brokers string, config collector.Config, rcaConfig *rca.PublisherConfig,
-	clusterName string) (*collector.Collector, *rca.EventPublisher, error) {
+func createCollectorWithRCA(brokers string, config collector.Config, rcaConfig *rca.Config,
+	clusterName string) (*collector.Collector, *publisher.EventPublisher, error) {
 
 	client, err := kafkaclient.NewClient(&kafkaclient.Config{
 		Brokers:        brokers,
@@ -27,12 +28,12 @@ func createCollectorWithRCA(brokers string, config collector.Config, rcaConfig *
 	coll := collector.NewWithClient(client, config)
 
 	// If RCA is not enabled, return standard collector
-	if rcaConfig == nil || !rcaConfig.Enabled {
+	if rcaConfig == nil || !rcaConfig.Publisher.Enabled {
 		return coll, nil, nil
 	}
 
 	// Create RCA publisher
-	rcaPublisher, err := rca.NewEventPublisher(*rcaConfig, clusterName)
+	rcaPublisher, err := publisher.NewEventPublisher(*rcaConfig, clusterName)
 	if err != nil {
 		log.Printf("Failed to create RCA publisher: %v", err)
 		return coll, nil, nil // Continue without RCA
@@ -42,7 +43,7 @@ func createCollectorWithRCA(brokers string, config collector.Config, rcaConfig *
 
 	// Create RCA analyzer
 	analyzer := &rcaAnalyzer{
-		evaluator: rca.NewLagEvaluatorWithRCA(config, rcaPublisher),
+		evaluator: publisher.NewLagEvaluatorWithRCA(config, rcaPublisher),
 		mu:        sync.Mutex{},
 	}
 
@@ -54,7 +55,7 @@ func createCollectorWithRCA(brokers string, config collector.Config, rcaConfig *
 
 // rcaAnalyzer wraps the RCA evaluator for use as a hook
 type rcaAnalyzer struct {
-	evaluator *rca.EvaluatorWithRCA
+	evaluator *publisher.EvaluatorWithRCA
 	mu        sync.Mutex
 }
 

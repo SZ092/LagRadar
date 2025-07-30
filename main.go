@@ -59,7 +59,7 @@ type Config struct {
 	} `yaml:"server"`
 
 	// RCA configuration
-	RCA rca.PublisherConfig `yaml:"rca"`
+	RCA rca.Config `yaml:"rca"`
 }
 
 func main() {
@@ -97,8 +97,8 @@ func main() {
 	log.Printf("Starting LagRadar...")
 
 	// Log RCA status
-	if config.RCA.Enabled {
-		log.Printf("RCA event publishing enabled (Redis: %s)", config.RCA.RedisAddr)
+	if config.RCA.Publisher.Enabled {
+		log.Printf("RCA event publishing enabled (Redis: %s)", config.RCA.Redis.Addr)
 	} else {
 		log.Printf("RCA event publishing disabled")
 	}
@@ -126,7 +126,7 @@ func main() {
 
 	// Create cluster manager with RCA support
 	var clusterManager *cluster.Manager
-	if config.RCA.Enabled {
+	if config.RCA.Publisher.Enabled {
 		clusterManager = cluster.NewManagerWithRCA(globalCollectorConfig, config.RCA)
 	} else {
 		clusterManager = cluster.NewManager(globalCollectorConfig)
