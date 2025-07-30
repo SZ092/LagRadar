@@ -46,7 +46,7 @@ run: build
 .PHONY: docker-build
 docker-build:
 	@echo "Building Docker image..."
-	@docker build -t $(DOCKER_IMAGE) -f $(DOCKER_DIR)/Dockerfile .
+	@docker build --no-cache -t $(DOCKER_IMAGE) -f $(DOCKER_DIR)/Dockerfile .
 
 ## test: Run tests
 .PHONY: test
@@ -119,17 +119,18 @@ compose-logs:
 compose-ps:
 	@docker-compose -f $(COMPOSE_FILE) ps
 
-## compose-restart: Restart all services
+## compose-restart: Stop and restart all services, removing volumes
 .PHONY: compose-restart
 compose-restart:
 	@docker-compose -f $(COMPOSE_FILE) down -v
-	@docker-compose -f $(COMPOSE_FILE) up
+	@docker-compose -f $(COMPOSE_FILE) up -d
 
-## compose-rebuild: Rebuild and restart services
+## compose-rebuild: Rebuild images without cache and restart services
 .PHONY: compose-rebuild
 compose-rebuild:
-	@echo "Rebuilding services..."
-	@docker-compose -f $(COMPOSE_FILE) up -d --build
+	@echo "Rebuilding services(no cache)..."
+	@docker-compose -f $(COMPOSE_FILE) build --no-cache
+	@docker-compose -f $(COMPOSE_FILE) up -d
 
 ## verify: Verify project (test, lint, fmt)
 .PHONY: verify
@@ -220,7 +221,8 @@ help:
 	@echo "  make compose-down        Stop all services"
 	@echo "  make compose-logs        View service logs"
 	@echo "  make compose-ps          List running services"
-	@echo "  make compose-restart     Restart all services"
+	@echo "  make compose-restart     Stop and restart all services, removing volumes"
+	@echo "  make compose-rebuild     Rebuild images without cache and restart services"
 	@echo ""
 	@echo "☸️  Kubernetes"
 	@echo "  make k8s-local           Deploy to local Minikube"
