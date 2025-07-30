@@ -3,10 +3,12 @@ module LagRadar
 go 1.22
 
 require (
+	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/buraksezer/consistent v0.10.0
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/confluentinc/confluent-kafka-go/v2 v2.10.1
 	github.com/go-redis/redis/v8 v8.11.5
+	github.com/go-redis/redismock/v8 v8.11.5
 	github.com/google/uuid v1.6.0
 	github.com/prometheus/client_golang v1.22.0
 	github.com/stretchr/testify v1.10.0
@@ -25,6 +27,7 @@ require (
 	github.com/prometheus/common v0.62.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
 	golang.org/x/sys v0.30.0 // indirect
 	google.golang.org/protobuf v1.36.5 // indirect
 )

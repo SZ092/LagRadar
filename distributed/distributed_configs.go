@@ -64,10 +64,11 @@ type InstanceWatchConfig struct {
 
 // StateStoreConfig holds config for state store
 type StateStoreConfig struct {
+	Prefix             string        `yaml:"prefix"`
 	InstanceTTL        time.Duration `yaml:"instance_ttl"`
 	InstanceTimeout    time.Duration `yaml:"instance_timeout"`
 	PartitionWindowTTL time.Duration `yaml:"partition_window_ttl"`
-	AssignmentKey      string        `yaml:"assignment_key"`
+	AssignmentTimeout  time.Duration `yaml:"assignment_timeout"`
 }
 
 // InstanceInfo holds info for each instance
