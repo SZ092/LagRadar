@@ -140,6 +140,125 @@ func TestEventPublisherConnectionFailure(t *testing.T) {
 	assert.Nil(t, publisher)
 }
 
+func TestEventDeduplication(t *testing.T) {
+	redisAddr := "localhost:6379"
+	if !isRedisAvailable(redisAddr) {
+		t.Skip("Redis is not available, skipping test")
+	}
+
+	config := rca.Config{
+		Publisher: rca.PublisherConfig{
+			Enabled:       true,
+			StreamKey:     "test:dedup:events",
+			MaxRetries:    3,
+			RetryInterval: "100ms",
+			DeDupeWindow:  1 * time.Minute,
+		},
+		Redis: rca.RedisConfig{
+			Addr: redisAddr,
+		},
+	}
+	// Clean up before test
+	cleanupRedis(t, config)
+
+	publisher, err := NewEventPublisher(config, "test-cluster")
+	require.NoError(t, err)
+	defer publisher.Close()
+
+	// Create identical events
+	status := collector.PartitionConsumerStatus{
+		GroupID:   "test-group",
+		Topic:     "test-topic",
+		Partition: 0,
+		Status:    collector.StatusStopped,
+	}
+
+	// First event should succeed
+	err = publisher.PublishPartitionEvent(
+		context.Background(),
+		rca.EventTypeConsumerStopped,
+		rca.SeverityCritical,
+		status,
+		"Duplicate test",
+	)
+	assert.NoError(t, err)
+
+	// Second identical event should be deduplicated
+	err = publisher.PublishPartitionEvent(
+		context.Background(),
+		rca.EventTypeConsumerStopped,
+		rca.SeverityCritical,
+		status,
+		"Duplicate test",
+	)
+	assert.NoError(t, err) // Should not error, just skip
+
+	// Verify only one event in stream
+	client := redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	defer client.Close()
+
+	result, err := client.XRead(context.Background(), &redis.XReadArgs{
+		Streams: []string{config.Publisher.StreamKey, "0"},
+		Count:   10,
+		Block:   1 * time.Second,
+	}).Result()
+
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	assert.Len(t, result[0].Messages, 1, "Should have only one event due to deduplication")
+}
+
+// Benchmark test
+func BenchmarkEventPublishing(b *testing.B) {
+	redisAddr := "localhost:6379"
+	if !isRedisAvailable(redisAddr) {
+		b.Skip("Redis is not available, skipping benchmark")
+	}
+
+	config := rca.Config{
+		Publisher: rca.PublisherConfig{
+			Enabled:       true,
+			StreamKey:     "bench:events",
+			MaxRetries:    1,
+			RetryInterval: "100ms",
+			DeDupeWindow:  5 * time.Minute,
+		},
+		Redis: rca.RedisConfig{
+			Addr: redisAddr,
+		},
+	}
+
+	// Clean up before benchmark
+	cleanupRedis(b, config)
+
+	publisher, err := NewEventPublisher(config, "bench-cluster")
+	require.NoError(b, err)
+	defer publisher.Close()
+	defer cleanupRedis(b, config)
+
+	status := collector.PartitionConsumerStatus{
+		GroupID:   "bench-group",
+		Topic:     "bench-topic",
+		Partition: 0,
+		Status:    collector.StatusActive,
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Vary the partition to avoid deduplication
+		status.Partition = int32(i % 100)
+		_ = publisher.PublishPartitionEvent(
+			context.Background(),
+			rca.EventTypeConsumerStopped,
+			rca.SeverityWarning,
+			status,
+			"Benchmark event",
+		)
+	}
+}
+
 func isRedisAvailable(addr string) bool {
 	client := redis.NewClient(&redis.Options{
 		Addr:        addr,
@@ -152,4 +271,28 @@ func isRedisAvailable(addr string) bool {
 
 	_, err := client.Ping(ctx).Result()
 	return err == nil
+}
+
+// Helper function to clean up Redis data before tests
+func cleanupRedis(t testing.TB, config rca.Config) {
+	client := redis.NewClient(&redis.Options{
+		Addr:     config.Redis.Addr,
+		Password: config.Redis.Password,
+		DB:       config.Redis.DB,
+	})
+	defer client.Close()
+
+	ctx := context.Background()
+
+	// Delete the stream
+	_ = client.Del(ctx, config.Publisher.StreamKey).Err()
+
+	// Delete all dedup keys (pattern: rca:dedup:*)
+	keys, err := client.Keys(ctx, "rca:dedup:*").Result()
+	if err == nil && len(keys) > 0 {
+		_ = client.Del(ctx, keys...).Err()
+	}
+
+	t.Logf("Cleaned up Redis: deleted stream %s and %d dedup keys",
+		config.Publisher.StreamKey, len(keys))
 }
