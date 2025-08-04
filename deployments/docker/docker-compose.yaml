@@ -161,6 +161,26 @@ services:
       timeout: 3s
       retries: 5
 
+  rca-service:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/DockerfileRCA
+    volumes:
+      - ../../configs/rca_dev.yaml:/app/config.yaml:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - lagradar-network
+    environment:
+      - CONFIG_FILE=/app/config.yaml
+    command: [ "-config", "/app/config.yaml" ]
+    healthcheck:
+      test: [ "CMD", "pgrep", "rca-service" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   prometheus-data:
   grafana-data:

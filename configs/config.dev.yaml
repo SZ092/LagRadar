@@ -8,15 +8,15 @@ kafka:
 
 collector:
   window:
-    size: 20
+    size: 10
     min_size: 5
-  check_interval: "30s"
+  check_interval: "10s"
   max_concurrency: 10
   thresholds:
     stalled_consumption_rate: 0.1
-    rapid_lag_increase_rate: 100.0
+    rapid_lag_increase_rate: 20
     lag_trend_threshold: 0.1
-    inactivity_timeout: "5m"
+    inactivity_timeout: "45s"
 
 http:
   address: :8080

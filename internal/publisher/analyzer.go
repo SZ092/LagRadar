@@ -136,7 +136,7 @@ func (e *EvaluatorWithRCA) detectCriticalConditions(
 	}
 
 	// Lag cleared detection
-	if status.CurrentLag == 0 && len(records) > 2 && records[len(records)-2].Lag > 10000 {
+	if status.CurrentLag == 0 && len(records) > 2 && records[len(records)-2].Lag > 1000 {
 		message := "Consumer has cleared significant lag"
 
 		if err := e.rcaPublisher.PublishPartitionEvent(

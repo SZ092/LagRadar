@@ -1,0 +1,14 @@
+# LagRadar RCA configuration
+
+redis:
+  addr: "redis:6379"
+  password: ""
+  db: 0
+
+consumer:
+  stream_key: "lagradar:rca:events"
+  consumer_group: "rca-analyzers"
+  consumer_name: "rca-consumer-1"
+  batch_size: 10
+  block_timeout: "5s"
+  max_retries: 3
