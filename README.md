@@ -16,7 +16,7 @@ Standalone RCA pipeline: lag events flow through Redis Streams to a dedicated RC
 
 ###  End-to-End Test Coverage
 Provided an automated e2e python script simulating full group lifecycle and lag anomalies, validating the RCA pipeline from Kafka through Redis Streams to the RCA consumer.
-All major lag scenarios (stall, spike, recovery, lag clear) are covered. (see [local_e2e_rca_test.py](local_e2e_rca_test.py)).
+All major lag scenarios (stall, spike, recovery, lag clear) are covered and verified in the pipeline (see [local_e2e_rca_test.py](local_e2e_rca_test.py)).
 
 ### Enhanced Local Deployment
 Refactored Makefile and Docker Compose setup for fast, reproducible local dev/test—run the entire monitoring + RCA pipeline with a single command.
