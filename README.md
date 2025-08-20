@@ -144,17 +144,21 @@ python3 local_e2e_rca_test.py
 - Full local dev/test workflow (Docker Compose)
 ---
 
-## Roadmap (Demo Only)
+## Implemented (Demo Only)
 
 - ✅ Distributed state/sharding backbone
 - ✅ Pluggable RCA pipeline (Redis Streams)
 - ✅ Standalone RCA consumer with test harness
 - ✅ Local end-to-end test script
-- 📝 Grafana alerting integration demo
-- 📝 Notification/report modules (extensible)
+
+## Out of Scope
+These items were considered during the design phase but are intentionally left out of scope for this demo:
+- Grafana alerting integration demo
+- Notification/report modules (extensible)
 
 ---
 ## About This Project
+> As of Aug 2025, LagRadar is feature-frozen, with no new functionality planned
 
 Maintained by Zhe Song as a personal engineering demo for distributed systems and SRE practices. Not a production OSS—no guarantees, no long-term support.
 

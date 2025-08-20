@@ -1,3 +1,4 @@
+> Note: This is a placeholder for personal reference. As of Aug 2025, there are no plans to actively implement or support this module.
 # Grafana Alerts (Planned)
 
 This directory is reserved for future experiments and example configurations related to Grafana alert rules, notification templates, and alerting setups for LagRadar.

@@ -1,3 +1,4 @@
+> Note: This prototype module was partially implemented for experimentation. As of Aug 2025, there are no plans to actively develop or support it.
 # Redis Integration - TBD
 
 This directory documents experimental and planned Redis integration modules for LagRadar.
