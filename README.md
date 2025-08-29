@@ -1,3 +1,7 @@
+> **ARCHIVE — Aug 29, 2025**  
+> LagRadar was a personal demo for distributed systems/SRE practices.  
+> No further updates planned — feel free to fork and explore!
+
 # LagRadar
 
 **LagRadar** is a modern, extensible toolkit for Kafka consumer lag monitoring and automated root cause analysis (RCA).
@@ -160,6 +164,5 @@ These items were considered during the design phase but are intentionally left o
 ## About This Project
 > As of Aug 2025, LagRadar is feature-frozen, with no new functionality planned
 
-Maintained by Zhe Song as a personal engineering demo for distributed systems and SRE practices. Not a production OSS—no guarantees, no long-term support.
 
-Questions or feedback: please contact: zhegithubcontact [at] gmail.com or raise an Issue
+This repository is archived and no longer maintained.
