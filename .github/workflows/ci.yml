@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go: [ '1.22', '1.21' ]
+        go: [ '1.24.x' ]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Go
@@ -30,7 +30,7 @@ jobs:
       - name: Verify (fmt, lint, tests)
         run: make verify
       - name: Upload coverage
-        if: matrix.go == '1.22' && github.event_name == 'push'
+        if: matrix.go == '1.24.x' && github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
           name: coverage.txt

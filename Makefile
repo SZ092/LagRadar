@@ -138,7 +138,7 @@ verify: deps fmt lint test
 dev-deps:
 	@echo "Installing development dependencies..."
 	@go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-	@go install github.com/cosmtrek/air@latest
+	@go install github.com/air-verse/air@v1.62.0
 	@go install github.com/go-delve/delve/cmd/dlv@latest
 
 

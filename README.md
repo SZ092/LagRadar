@@ -1,168 +1,185 @@
-> **ARCHIVE — Aug 29, 2025**  
-> LagRadar was a personal demo for distributed systems/SRE practices.  
-> No further updates planned — feel free to fork and explore!
-
 # LagRadar
 
-**LagRadar** is a modern, extensible toolkit for Kafka consumer lag monitoring and automated root cause analysis (RCA).
+A Kafka consumer lag monitoring and automated root cause analysis (RCA) system built in Go. LagRadar provides partition-level sliding window analytics, multi-cluster management, and an event-driven RCA pipeline backed by Redis Streams.
 
-Designed and built by Zhe Song, this repository serves as a portfolio piece and demonstration of my approach to distributed systems, infrastructure-native workflows, and modern SRE practices.
-
-> **NOTE:**  
-> LagRadar is a personal engineering project for demo/reference only. Not intended as production OSS or an active community project.
+Designed and built by Zhe Song.
 
 ---
 
-## Latest Updates
+## Architecture
 
-###  Modular RCA Consumer
-Standalone RCA pipeline: lag events flow through Redis Streams to a dedicated RCA consumer, enabling future extension for alerting and integrations.
-
-###  End-to-End Test Coverage
-Provided an automated e2e python script simulating full group lifecycle and lag anomalies, validating the RCA pipeline from Kafka through Redis Streams to the RCA consumer.
-All major lag scenarios (stall, spike, recovery, lag clear) are covered and verified in the pipeline (see [local_e2e_rca_test.py](local_e2e_rca_test.py)).
-
-### Enhanced Local Deployment
-Refactored Makefile and Docker Compose setup for fast, reproducible local dev/test—run the entire monitoring + RCA pipeline with a single command.
-
-### Distributed Core
-Redis-powered sharding, state management, and instance coordination for horizontal scalability and failover.
-
----
-
-## Architecture Highlight
-###  Distributed, Extensible by Design
-
-- **Distributed Coordination & Sharding**
-  - Consistent hashing and Redis-backed state store for scalable group assignment, instance health, and windowed analytics.
-  - Lag events published to Redis Streams for fully decoupled, replayable event workflow; enables future modular integrations (alerting, storage, RCA plugins).
-- **Production-inspired Local Testability**
-  - End-to-end test script simulates group lifecycle, lag anomaly injection, and auto-verifies RCA pipeline detection/processing in a single run.
-- **Cloud-Native Observability**
-  - Exposes detailed Prometheus metrics for RCA events, anomaly detection, and consumer health. Natively supports integration with Grafana and other monitoring stacks.
-
-> Designed for demo/reference only — not for direct production deployment.
----
-
-
-## Quick Start
-
-### One-click Local Dev Environment
-
-LagRadar provides a fully automated local test environment with Kafka, Zookeeper, Prometheus, and Grafana, using `docker-compose`.
-
-#### 1. Clone the repo
-
-```sh
-git clone https://github.com/{yourusername}/LagRadar.git
-cd LagRadar
+```
+┌─────────────────────────────────────────────────────────┐
+│                    LagRadar Monitor                     │
+│                                                         │
+│  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │
+│  │  Collector   │─▶│  Evaluator   │─▶│  Prometheus   │  │
+│  │  (per group) │  │  (sliding    │  │  Metrics      │  │
+│  │              │  │   window)    │  │               │  │
+│  └──────┬───────┘  └──────┬───────┘  └───────────────┘  │
+│         │                 │                              │
+│         │           ┌─────▼──────┐                       │
+│         │           │ RCA Hook   │                       │
+│         │           └─────┬──────┘                       │
+│  ┌──────▼───────┐         │                              │
+│  │ Cluster      │   ┌─────▼──────────┐                   │
+│  │ Manager      │   │ Event Publisher │                   │
+│  │ (multi-      │   │ (dedup +       │                   │
+│  │  cluster)    │   │  retry)        │                   │
+│  └──────────────┘   └─────┬──────────┘                   │
+│                           │                              │
+└───────────────────────────┼──────────────────────────────┘
+                            │
+                    ┌───────▼───────┐
+                    │ Redis Streams │
+                    └───────┬───────┘
+                            │
+                    ┌───────▼───────┐
+                    │ RCA Consumer  │
+                    │ (standalone)  │
+                    └───────────────┘
 ```
 
-#### 2. Build and start the stack
+### Core Components
 
-**With Makefile (recommended):**
+**Sliding Window Evaluator** — Maintains per-partition offset windows and evaluates consumer health using consumption rate, lag change rate, and trend analysis. Classifies each partition as `ACTIVE`, `LAGGING`, `STALLED`, `STOPPED`, or `EMPTY` with corresponding health assessments.
+
+**Multi-Cluster Manager** — Manages independent collectors per Kafka cluster with per-cluster or global configuration. Supports dynamic cluster addition/removal and concurrent group collection with configurable concurrency limits.
+
+**RCA Event Pipeline** — Status transitions and anomaly conditions (rapid lag increase, consumer stall/stop, recovery, lag cleared) are published to Redis Streams with fingerprint-based deduplication and configurable retry. A standalone RCA consumer reads from the stream with consumer groups, enabling independent scaling and pluggable event handlers.
+
+**Distributed Coordination** (backbone implemented) — Consistent hash sharding (`buraksezer/consistent` + `xxhash`), Redis-backed state store for instance registration, heartbeat, assignment persistence, and partition window storage. Designed for horizontal scaling across multiple LagRadar instances.
+
+---
+
+## Key Technical Decisions
+
+- **Sliding window over point-in-time checks** — Trend detection requires historical context. Each partition maintains a configurable window of offset records, enabling consumption rate calculation and lag trend analysis via rolling averages.
+- **Hook-based RCA integration** — The collector's evaluation hook decouples core metric collection from RCA event detection, allowing the RCA pipeline to be enabled/disabled without touching collector logic.
+- **Redis Streams for event transport** — Provides persistent, replayable event delivery with consumer group semantics, avoiding tight coupling between the monitor and downstream processors.
+- **Consistent hashing for group assignment** — Minimizes reassignment churn when instances join or leave, with configurable partition count, replication factor, and load balance factor.
+
+---
+
+## Metrics Exposed
+
+LagRadar exposes Prometheus metrics at `/metrics`:
+
+| Metric | Description |
+|--------|-------------|
+| `kafka_consumer_lag` | Current lag per partition |
+| `kafka_consumer_status` | Consumer status (active/lagging/stalled/stopped/empty) |
+| `kafka_consumer_health` | Health assessment (good/warning/critical) |
+| `kafka_consumer_lag_trend` | Lag trend direction (stable/increasing/decreasing) |
+| `kafka_consumer_consumption_rate` | Messages consumed per second |
+| `kafka_consumer_lag_change_rate` | Lag change rate (msg/s) |
+| `kafka_consumer_group_total_lag` | Total lag across all partitions for a group |
+| `kafka_consumer_group_members` | Member count per consumer group |
+| `kafka_lag_exporter_scrape_duration_seconds` | Collection duration per cluster |
+
+---
+
+## RCA Event Types
+
+| Event | Trigger | Severity |
+|-------|---------|----------|
+| `consumer_stopped` | Active/lagging → stopped transition | Critical |
+| `consumer_stalled` | Active → stalled transition | Warning |
+| `rapid_lag_increase` | Lag growth > 2× configured threshold with lag > 1000 | Warning |
+| `consumer_recovered` | Stopped/stalled → active transition | Info |
+| `lag_cleared` | Lag drops to 0 from > 1000 | Info |
+
+---
+
+## Quick Start
 
 ```sh
 # Build Docker images
 make docker-build
 
-# [Optional] Rebuild images without cache and start all services  
-make compose-rebuild
+# Start full stack (Kafka 3-node, Redis, Prometheus, Grafana, LagRadar, RCA consumer)
+make compose-up
 
-# Start all services (Kafka, Zookeeper, Redis, LagRadar, RCA, Prometheus, Grafana)
-make compose-up         
-
-# Run E2E RCA pipeline test
+# Run end-to-end RCA pipeline test
 python3 local_e2e_rca_test.py
 
-# Sample Output - Some event boundaries (e.g. “recovered” vs “lag cleared”) may overlap in test results, reflecting real-world 
-# signal ambiguity and scenario simulation limitations.
-2025-08-05 14:54:21,721 - __main__ - INFO - 🚨 RCA Event Detected: consumer_stalled
-2025-08-05 14:54:21,721 - __main__ - INFO -    Group: e2e-consumer-stalled-group-1754419994
-2025-08-05 14:54:21,721 - __main__ - INFO -    Topic: e2e-consumer-stalled-1754419994[0]
-2025-08-05 14:54:21,721 - __main__ - INFO -    Severity: warning
-2025-08-05 14:54:21,721 - __main__ - INFO -    Message: Consumer stalled for 40s
-2025-08-05 14:54:21,721 - __main__ - INFO -    Current Lag: 1800
-2025-08-05 14:54:21,721 - __main__ - INFO -    ID: 1754420061716-0
-2025-08-05 14:54:24,425 - __main__ - INFO - Window completeness for e2e-consumer-stalled-group-1754419994: 70%
-2025-08-05 14:54:34,438 - __main__ - INFO - Window completeness for e2e-consumer-stalled-group-1754419994: 80%
-2025-08-05 14:54:34,438 - __main__ - INFO - Waiting additional 30s for LagRadar to process...
-2025-08-05 14:55:04,432 - __main__ - INFO - Scenario consumer-stalled completed successfully
-2025-08-05 14:55:04,432 - __main__ - INFO - Stopping scenario: consumer-stalled
-2025-08-05 14:55:34,442 - __main__ - INFO - Final status: {
-  "cluster": "default",
-  "group": "e2e-consumer-stalled-group-1754419994",
-  "status": {
-    "GroupID": "e2e-consumer-stalled-group-1754419994",
-    "OverallHealth": "CRITICAL",
-    "TotalLag": 1800,
-    "PartitionCount": 1,
-    "ActivePartitions": 0,
-    "StoppedPartitions": 1,
-    "StalledPartitions": 0,
-    "MemberCount": 0,
-    "LastUpdateTime": "2025-08-05T18:55:31.691556088Z",
-    "CriticalPartitions": [
-      {
-        "GroupID": "e2e-consumer-stalled-group-1754419994",
-        "Topic": "e2e-consumer-stalled-1754419994",
-        "Partition": 0,
-        "CurrentOffset": 200,
-        "HighWatermark": 2000,
-        "CurrentLag": 1800,
-        "LastUpdateTime": "2025-08-05T18:55:31.693280629Z",
-        "Status": "STOPPED",
-        "LagTrend": "STABLE",
-        "Health": "CRITICAL",
-        "ConsumptionRate": 0,
-        "LagChangeRate": 0,
-        "WindowCompleteness": 100,
-        "Message": "Consumer stopped for 1m30s with lag 1800",
-        "IsActive": false,
-        "TimeSinceLastMove": 90002741667
-      }
-    ],
-    "WarningPartitions": null,
-    "HealthyPartitions": null
-  }
-}
-
+# Access
+# Prometheus metrics:  http://localhost:8080/metrics
+# Grafana dashboard:   http://localhost:3000 (admin/admin)
+# LagRadar API:        http://localhost:8080/api/v1/status
 ```
 
-#### 3. Access endpoints & dashboards
+### API Endpoints
 
-- View Prometheus metrics at:   [http://localhost:8080/metrics](http://localhost:8080/metrics)
-- Default Grafana Dashboard at:    [http://localhost:3000](http://localhost:3000)
-
-#### 4. Custom configuration
-
-- For config details, see `config.dev.yaml` and inline comments in [Makefile](Makefile)
-
----
-## Key Features
-
-- Multi-cluster, partition-level analytics
-- Multi-group, multi-topic monitoring
-- Standalone, event-driven RCA consumer (pluggable and extensible)
-- Distributed sharding and coordination (Redis-powered)
-- Full local dev/test workflow (Docker Compose)
----
-
-## Implemented (Demo Only)
-
-- ✅ Distributed state/sharding backbone
-- ✅ Pluggable RCA pipeline (Redis Streams)
-- ✅ Standalone RCA consumer with test harness
-- ✅ Local end-to-end test script
-
-## Out of Scope
-These items were considered during the design phase but are intentionally left out of scope for this demo:
-- Grafana alerting integration demo
-- Notification/report modules (extensible)
+```
+GET /health                                    # Liveness probe
+GET /ready                                     # Readiness probe
+GET /api/v1/clusters                           # List monitored clusters
+GET /api/v1/clusters/{cluster}/status          # Cluster status
+GET /api/v1/clusters/{cluster}/groups          # List groups in cluster
+GET /api/v1/clusters/{cluster}/groups/{group}  # Group detail
+GET /api/v1/status                             # All groups (aggregated)
+GET /api/v1/groups                             # List all groups
+GET /api/v1/config                             # Running configuration
+```
 
 ---
-## About This Project
-> As of Aug 2025, LagRadar is feature-frozen, with no new functionality planned
 
+## Configuration
 
-This repository is archived and no longer maintained.
+See [`config.dev.yaml`](configs/config.dev.yaml) for a full example. Key settings:
+
+```yaml
+collector:
+  window:
+    size: 10                         # Records per partition window
+    min_size: 5                      # Minimum records before evaluation
+  check_interval: "10s"
+  max_concurrency: 10
+  thresholds:
+    stalled_consumption_rate: 0.1    # msg/s below this = stalled
+    rapid_lag_increase_rate: 20      # msg/s above this = rapid increase
+    lag_trend_threshold: 0.1         # Relative change threshold for trend
+    inactivity_timeout: "45s"        # No offset change = stopped
+```
+
+---
+
+## Project Structure
+
+```
+cmd/
+  monitor/main.go        # LagRadar monitor entrypoint
+  rca/main.go            # RCA consumer entrypoint
+internal/
+  collector/             # Sliding window collector + evaluator
+  cluster/               # Multi-cluster manager
+  publisher/             # RCA event publisher + analyzer
+  rca/                   # Event types, config, consumer
+  metrics/               # Prometheus metric definitions
+  api/                   # HTTP handlers
+pkg/
+  kafka/                 # Kafka admin/consumer client wrapper
+distributed/             # Coordination configs, state store, sharding
+```
+
+---
+
+## E2E Test Scenarios
+
+The [`local_e2e_rca_test.py`](local_e2e_rca_test.py) script validates the full pipeline by simulating four scenarios against a local Kafka cluster:
+
+1. **Consumer Stalled** — Producer at 200 msg/s, consumer at 10 msg/s → triggers `consumer_stalled`
+2. **Rapid Lag Increase** — Normal production followed by 10× spike → triggers `rapid_lag_increase`
+3. **Consumer Recovery** — Consumer stops for 60s, then resumes → triggers `consumer_stopped` then `consumer_recovered`
+4. **Lag Cleared** — 5000 messages produced upfront, consumer clears backlog → triggers `lag_cleared`
+
+---
+
+## Tech Stack
+
+Go 1.24, confluent-kafka-go, go-redis, Prometheus client, Docker, Redis Streams
+
+---
+
+*This is a personal portfolio project demonstrating distributed systems and SRE practices. Not intended for production deployment.*
