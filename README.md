@@ -178,7 +178,7 @@ The [`local_e2e_rca_test.py`](local_e2e_rca_test.py) script validates the full p
 
 ## Tech Stack
 
-Go 1.24, confluent-kafka-go, go-redis, Prometheus client, Docker, Redis Streams
+Go 1.26, confluent-kafka-go, go-redis, Prometheus client, Docker, Redis Streams
 
 ---
 
